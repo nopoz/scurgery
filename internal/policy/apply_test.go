@@ -176,20 +176,25 @@ func TestApplyRejectsUnparseableInput(t *testing.T) {
 	}
 }
 
-// bundleGolden exercises all three appending paths in one Apply call: two
-// members appended into an existing object (tagOwners), two elements
-// appended into an existing array (grants), and a brand new top-level key
-// (nodeAttrs). Each of the merged containers already carries a trailing
-// comma, or becomes the new last root member, so comparing full bytes
-// against a golden file is the only way to catch a broken trailing-comma
-// restore: string-matching tests can't see a comma.
+// bundleGolden exercises all appending paths in one Apply call: two members
+// appended into an existing object (tagOwners), two elements appended into
+// an existing array (grants), and two brand new top-level keys (nodeAttrs,
+// acls). Each of the merged containers already carries a trailing comma, or
+// becomes a new root member, so comparing full bytes against a golden file
+// is the only way to catch a broken trailing-comma restore: string-matching
+// tests can't see a comma.
 //
-// The first appended member of tagOwners and the first appended element of
-// grants each carry a bundle-only comment before their separating comma.
-// hujson attaches that comment to the *first* element's AfterExtra rather
-// than the container's, precisely because a second element follows it, so
-// it is also the only way to catch a dropped `AfterExtra = nil`: without
-// that reset, the bundle's own formatting leaks into the merged policy.
+// The first appended member of tagOwners, the first appended element of
+// grants, and the first (non-last) of the two new top-level keys,
+// nodeAttrs, each carry a bundle-only comment before their separating
+// comma. hujson attaches that comment to the element's own AfterExtra
+// rather than the container's, precisely because another element follows
+// it, so this is also the only way to catch a dropped `AfterExtra = nil`
+// at any of those three sites: without the reset, the bundle's own
+// formatting leaks into the merged policy. A single new top-level key
+// would not exercise this for the root-append site, since it would always
+// be the last root member and get corrected by the final
+// setTrailingComma(root, rootHad) regardless of the per-member reset.
 const bundleGolden = `{
 	"tagOwners": {
 		"tag:aws-app": ["autogroup:admin", "tag:aws-app"] /* bundle-only comment */,
@@ -199,9 +204,8 @@ const bundleGolden = `{
 		{"src": ["tag:aws-app"], "dst": ["tag:aws-subnet-router"], "ip": ["443"]} /* bundle-only comment */,
 		{"src": ["tag:aws-app"], "dst": ["tag:aws-subnet-router"], "ip": ["444"]},
 	],
-	"nodeAttrs": [
-		{"target": ["tag:aws-app"], "attr": ["funnel"]},
-	],
+	"nodeAttrs": [{"target": ["tag:aws-app"], "attr": ["funnel"]}] /* bundle-only comment */,
+	"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}],
 }`
 
 func TestApplyMatchesGoldenOutput(t *testing.T) {
@@ -211,8 +215,8 @@ func TestApplyMatchesGoldenOutput(t *testing.T) {
 	if got != want {
 		t.Errorf("Policy does not match golden output\n--- want ---\n%s\n--- got ---\n%s", want, got)
 	}
-	if res.Added != 5 {
-		t.Errorf("Added = %d, want 5", res.Added)
+	if res.Added != 6 {
+		t.Errorf("Added = %d, want 6", res.Added)
 	}
 }
 

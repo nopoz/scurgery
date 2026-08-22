@@ -37,7 +37,7 @@
 		"tag:aws-app-2": ["autogroup:admin"],
 	},
 	// scurgery:aws-router owns-key
-	"nodeAttrs": [
-		{"target": ["tag:aws-app"], "attr": ["funnel"]},
-	],
+	"nodeAttrs": [{"target": ["tag:aws-app"], "attr": ["funnel"]}],
+	// scurgery:aws-router owns-key
+	"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}],
 }
