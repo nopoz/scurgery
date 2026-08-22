@@ -128,17 +128,66 @@ func TestRemoveOnAbsentNamespaceRemovesNothing(t *testing.T) {
 	}
 }
 
+func TestRemoveArrayElementRestoresOriginalByteForByte(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	applied := applyOK(t, string(orig), removeBundleGrants, "aws-router")
+
+	res, err := Remove(applied.Policy, "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != string(orig) {
+		t.Errorf("remove did not restore the original byte-for-byte\n--- want ---\n%s\n--- got ---\n%s", orig, res.Policy)
+	}
+	if res.Removed != 1 {
+		t.Errorf("Removed = %d, want 1", res.Removed)
+	}
+}
+
 func TestNamespacesLists(t *testing.T) {
 	orig := loadFixture(t, "realistic.hujson")
 	a := applyOK(t, string(orig), bundleTagOwners, "aws-router")
 	b := applyOK(t, string(a.Policy), `{"nodeAttrs": [{"target": ["tag:aws-app"], "attr": ["funnel"]}]}`, "other")
+	// Applied last, but alphabetically sorts in the middle: if Namespaces
+	// relied on map iteration order instead of sorting, this would only
+	// coincidentally land in the right place.
+	c := applyOK(t, string(b.Policy), `{"tagOwners": {"tag:mid": ["autogroup:admin"]}}`, "middle")
 
-	got, err := Namespaces(b.Policy)
+	got, err := Namespaces(c.Policy)
 	if err != nil {
 		t.Fatalf("Namespaces: %v", err)
 	}
-	if len(got) != 2 || got[0] != "aws-router" || got[1] != "other" {
-		t.Errorf("Namespaces = %v, want [aws-router other] sorted", got)
+	want := []string{"aws-router", "middle", "other"}
+	if len(got) != len(want) {
+		t.Fatalf("Namespaces = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Namespaces = %v, want %v sorted", got, want)
+			break
+		}
+	}
+}
+
+func TestNamespacesFindsArrayElementMarker(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	// removeBundleGrants merges into the fixture's existing grants array, so
+	// the only marker scurgery leaves is on the new element itself: no
+	// owns-key marker on any object key exists to find it by instead.
+	applied := applyOK(t, string(orig), removeBundleGrants, "aws-router")
+
+	got, err := Namespaces(applied.Policy)
+	if err != nil {
+		t.Fatalf("Namespaces: %v", err)
+	}
+	found := false
+	for _, ns := range got {
+		if ns == "aws-router" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Namespaces = %v, want aws-router (marked only on an array element)", got)
 	}
 }
 
@@ -159,6 +208,20 @@ func TestRemoveStructuralWhenMarkersAreGone(t *testing.T) {
 	}
 	if len(res.Unmatched) != 0 {
 		t.Errorf("Unmatched = %v, want none", res.Unmatched)
+	}
+}
+
+func TestRemoveStructuralRestoresOriginalByteForByte(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	applied := applyOK(t, string(orig), bundleTagOwners, "aws-router")
+	stripped := strings.ReplaceAll(string(applied.Policy), "// scurgery:aws-router\n", "")
+
+	res, err := RemoveStructural([]byte(stripped), []byte(bundleTagOwners))
+	if err != nil {
+		t.Fatalf("RemoveStructural: %v", err)
+	}
+	if string(res.Policy) != string(orig) {
+		t.Errorf("RemoveStructural did not restore the original byte-for-byte\n--- want ---\n%s\n--- got ---\n%s", orig, res.Policy)
 	}
 }
 
