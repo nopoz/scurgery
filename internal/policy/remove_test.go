@@ -225,6 +225,46 @@ func TestRemoveStructuralRestoresOriginalByteForByte(t *testing.T) {
 	}
 }
 
+// The round-trip matrix in roundtrip_test.go never reaches setTrailingComma's
+// relocate-the-comment branch: every trailing-comma transition it exercises
+// either sets a nil AfterExtra to the sentinel, or leaves an already-non-nil
+// AfterExtra alone, because Apply always resets a freshly appended member's
+// AfterExtra to nil first. Relocation only fires when the member that ends
+// up last already carries real comment text and the container's want flips
+// to false, which structural removal here reaches directly: tag:b is the
+// true last member with no trailing comma at the container's end (had is
+// false), and removing it exposes tag:a, whose own comment sits before its
+// own (non-trailing) comma from the original parse. Confirmed by hand: a
+// discard-only setTrailingComma (the bug this branch exists to prevent)
+// silently drops "/* keep me */" here instead of relocating it.
+func TestRemoveStructuralRelocatesACommentWhenClearingTrailingComma(t *testing.T) {
+	policy := `{
+	"tagOwners": {
+		"tag:a": ["autogroup:admin"] /* keep me */,
+		"tag:b": ["autogroup:admin"]
+	}
+}
+`
+	bundle := `{"tagOwners": {"tag:b": ["autogroup:admin"]}}`
+	want := `{
+	"tagOwners": {
+		"tag:a": ["autogroup:admin"] /* keep me */
+	}
+}
+`
+
+	res, err := RemoveStructural([]byte(policy), []byte(bundle))
+	if err != nil {
+		t.Fatalf("RemoveStructural: %v", err)
+	}
+	if res.Removed != 1 {
+		t.Errorf("Removed = %d, want 1", res.Removed)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("relocated comment did not survive\n--- want ---\n%s\n--- got ---\n%s", want, res.Policy)
+	}
+}
+
 func TestRemoveStructuralReportsAbsentMembers(t *testing.T) {
 	orig := loadFixture(t, "realistic.hujson")
 	res, err := RemoveStructural(orig, []byte(bundleTagOwners))
