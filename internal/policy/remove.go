@@ -15,6 +15,55 @@ type RemoveResult struct {
 	Unmatched []string
 }
 
+// otherNamespaceMarker reports whether extra carries a scurgery marker for a
+// namespace other than ns.
+func otherNamespaceMarker(extra hujson.Extra, ns string) bool {
+	s := string(extra)
+	for i := 0; i < len(s); {
+		j := strings.Index(s[i:], markerPrefix)
+		if j < 0 {
+			return false
+		}
+		start := i + j + len(markerPrefix)
+		end := start
+		for end < len(s) && !namespaceEnds(s[end]) {
+			end++
+		}
+		if end > start && s[start:end] != ns {
+			return true
+		}
+		i = end
+		if i == start {
+			i++ // no progress: step past the prefix so this cannot loop
+		}
+	}
+	return false
+}
+
+// containerSharedWithOtherNamespace reports whether any member or element of
+// v carries a marker for a namespace other than ns. An owns-key container
+// must not be dropped whole while another namespace still has something
+// inside it: the container's own marker is left untouched in that case, so a
+// later Remove of the original namespace finds it unshared once the other
+// namespace is gone too.
+func containerSharedWithOtherNamespace(v hujson.Value, ns string) bool {
+	switch t := v.Value.(type) {
+	case *hujson.Object:
+		for _, m := range t.Members {
+			if otherNamespaceMarker(m.Name.BeforeExtra, ns) {
+				return true
+			}
+		}
+	case *hujson.Array:
+		for _, el := range t.Elements {
+			if otherNamespaceMarker(el.BeforeExtra, ns) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Remove deletes every member and element marked with ns, and every top-level
 // key marked as created by ns. Containers the operator owned are left in place
 // even when every marked member inside them is removed.
@@ -36,7 +85,7 @@ func Remove(policy []byte, ns string) (*RemoveResult, error) {
 	kept := make([]hujson.ObjectMember, 0, len(rootObj.Members))
 
 	for _, m := range rootObj.Members {
-		if hasKeyMarker(m.Name.BeforeExtra, ns) {
+		if hasKeyMarker(m.Name.BeforeExtra, ns) && !containerSharedWithOtherNamespace(m.Value, ns) {
 			res.Removed++
 			continue
 		}

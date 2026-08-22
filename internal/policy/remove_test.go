@@ -44,6 +44,41 @@ func TestRemoveTakesWholeContainerItCreated(t *testing.T) {
 	}
 }
 
+func TestRemoveLeavesContainerSharedWithAnotherNamespace(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	bundleA := `{"nodeAttrs": [{"target": ["tag:a"], "attr": ["funnel"]}]}`
+	bundleB := `{"nodeAttrs": [{"target": ["tag:b"], "attr": ["funnel"]}]}`
+
+	a := applyOK(t, string(orig), bundleA, "ns-a")
+	b := applyOK(t, string(a.Policy), bundleB, "ns-b")
+
+	res, err := Remove(b.Policy, "ns-a")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	got := string(res.Policy)
+	if !strings.Contains(got, "tag:b") {
+		t.Error("ns-b's element must survive when ns-a is removed from a container they share")
+	}
+	if !strings.Contains(got, `"nodeAttrs"`) {
+		t.Error("a container another namespace still uses must not be dropped")
+	}
+
+	nss, err := Namespaces(res.Policy)
+	if err != nil {
+		t.Fatalf("Namespaces: %v", err)
+	}
+	found := false
+	for _, n := range nss {
+		if n == "ns-b" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Namespaces = %v, want ns-b still present", nss)
+	}
+}
+
 func TestRemoveLeavesOperatorContainerInPlace(t *testing.T) {
 	orig := loadFixture(t, "realistic.hujson")
 	applied := applyOK(t, string(orig), bundleTagOwners, "aws-router")
