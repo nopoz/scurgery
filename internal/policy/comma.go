@@ -31,17 +31,11 @@ func setTrailingComma(v hujson.Value, want bool) {
 		if len(t.Elements) == 0 {
 			return
 		}
-		for i := range t.Elements[:len(t.Elements)-1] {
-			clearStraySentinel(&t.Elements[i].AfterExtra)
-		}
 		last = &t.Elements[len(t.Elements)-1].AfterExtra
 		container = &t.AfterExtra
 	case *hujson.Object:
 		if len(t.Members) == 0 {
 			return
-		}
-		for i := range t.Members[:len(t.Members)-1] {
-			clearStraySentinel(&t.Members[i].Value.AfterExtra)
 		}
 		last = &t.Members[len(t.Members)-1].Value.AfterExtra
 		container = &t.AfterExtra
@@ -64,14 +58,4 @@ func setTrailingComma(v hujson.Value, want bool) {
 		*container = moved
 	}
 	*last = nil
-}
-
-// clearStraySentinel removes a leftover trailing-comma sentinel from an
-// element that is no longer the container's last element. The sentinel is a
-// non-nil, zero-length AfterExtra; anything longer is real comment content
-// between that element and its comma, and is left untouched.
-func clearStraySentinel(e *hujson.Extra) {
-	if *e != nil && len(*e) == 0 {
-		*e = nil
-	}
 }

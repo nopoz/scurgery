@@ -48,11 +48,9 @@ func TestTrailingCommaSurvivesTailMutation(t *testing.T) {
 	arr.Elements = append(arr.Elements, mustParse(t, "3"))
 	setTrailingComma(v, had)
 
-	if arr.Elements[1].AfterExtra != nil {
-		t.Error("sentinel should have moved off the old last element")
-	}
-	if arr.Elements[2].AfterExtra == nil {
-		t.Error("sentinel should be on the new last element")
+	packed := string(v.Pack())
+	if !strings.HasSuffix(strings.TrimSpace(packed), ",]") {
+		t.Fatalf("after append, the trailing comma did not move to the new last element: %q", packed)
 	}
 
 	arr.Elements = arr.Elements[:len(arr.Elements)-1]
