@@ -10,6 +10,9 @@ import (
 // a standard longest-common-subsequence table, which is ample for policy files
 // and avoids a dependency.
 func Unified(before, after []byte, context int) string {
+	if context < 0 {
+		context = 0
+	}
 	a := splitLines(string(before))
 	b := splitLines(string(after))
 
