@@ -17,6 +17,12 @@ import (
 // that it does not run on the structural path.
 var removeVerify = policy.VerifyRemove
 
+// removeStructuralVerify is policy.VerifyRemoveStructural behind a package
+// variable, mirroring removeVerify, so tests can observe it actually running
+// on the structural path and confirm that a failing check blocks the write
+// rather than being merely present but unreachable.
+var removeStructuralVerify = policy.VerifyRemoveStructural
+
 // runRemove takes either a namespace name or a bundle path. Markers are always
 // tried first. Structural matching needs the bundle to compare against, and is
 // never used without the operator saying so.
@@ -43,7 +49,7 @@ func runRemove(ctx context.Context, env *Env, target, nameOverride string, match
 	var usedStructural bool
 	verify := func(before, after []byte) error {
 		if usedStructural {
-			return policy.VerifyRemoveStructural(before, after, b.Data)
+			return removeStructuralVerify(before, after, b.Data)
 		}
 		return removeVerify(before, after, name)
 	}
@@ -70,14 +76,24 @@ func runRemove(ctx context.Context, env *Env, target, nameOverride string, match
 			if err != nil {
 				return nil, err
 			}
-			who := "the other namespace"
-			if len(blockers) > 0 {
-				who = strings.Join(blockers, ", ")
+			if len(blockers) == 0 {
+				// Remove() only scans the marker locations Apply produces:
+				// a top-level key, or an immediate member/element of a
+				// top-level container. A marker sitting deeper than that
+				// (only reachable by hand-editing the policy) is invisible
+				// to both Remove and RemoveBlockers, but Namespaces still
+				// finds it, so ns looks present with nothing identifiable
+				// holding it there. Say that plainly rather than asserting
+				// a shared container that was never found.
+				return nil, fmt.Errorf("%q still appears in the policy after removing everything scurgery could "+
+					"find, but nothing scurgery recognizes is holding it there: no top-level container it "+
+					"created is shared with another namespace. Nothing was changed. The policy may carry a %q "+
+					"marker somewhere scurgery does not know how to interpret", name, name)
 			}
 			return nil, fmt.Errorf("%q was not removed: it shares a top-level container that scurgery created "+
 				"with another namespace, so nothing marked for %q could be taken out without also destroying "+
 				"that namespace's rules. Nothing was changed. Remove %s first, then re-run this command to "+
-				"finish removing %q", name, name, who, name)
+				"finish removing %q", name, name, strings.Join(blockers, ", "), name)
 		}
 
 		if res.Removed > 0 {

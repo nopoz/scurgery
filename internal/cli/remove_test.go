@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -402,5 +403,97 @@ func TestRemoveStructuralWarnsOnEmptiedContainer(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"tagOwners" is now empty`) {
 		t.Errorf("leaving an empty container behind must be flagged by the warning itself, not merely by the rendered diff containing the key name, got %q", out.String())
+	}
+}
+
+// TestRemoveStructuralSelfCheckRuns proves policy.VerifyRemoveStructural is
+// actually invoked on the structural path, not merely present in the source:
+// a check that is never called would leave the whole suite green.
+func TestRemoveStructuralSelfCheckRuns(t *testing.T) {
+	calls := 0
+	orig := removeStructuralVerify
+	removeStructuralVerify = func(before, after, bundle []byte) error {
+		calls++
+		return orig(before, after, bundle)
+	}
+	defer func() { removeStructuralVerify = orig }()
+
+	f := &fakeTailnet{policy: []byte(strippedPolicy), etag: `"e1"`, validateOK: true}
+	env, _, done := testEnv(t, f, "")
+	defer done()
+
+	p := writeBundleFile(t, "aws-router.hujson", removeBundle)
+	if err := runRemove(context.Background(), env, p, "", true); err != nil {
+		t.Fatalf("runRemove: %v", err)
+	}
+	if calls == 0 {
+		t.Error("the structural self-check must run on the structural path")
+	}
+}
+
+// TestRemoveStructuralSelfCheckBlocksTheWrite injects a deliberate failure
+// into the structural self-check and confirms it actually blocks the write,
+// rather than being reachable but ignored. This is the test that would catch
+// runRemove's verify closure reverting to an unconditional "return nil" on
+// the structural branch: counting calls alone would not, since a call that
+// is made but whose result is discarded still increments a counter.
+func TestRemoveStructuralSelfCheckBlocksTheWrite(t *testing.T) {
+	orig := removeStructuralVerify
+	removeStructuralVerify = func(before, after, bundle []byte) error {
+		return errors.New("injected structural self-check failure")
+	}
+	defer func() { removeStructuralVerify = orig }()
+
+	f := &fakeTailnet{policy: []byte(strippedPolicy), etag: `"e1"`, validateOK: true}
+	env, _, done := testEnv(t, f, "")
+	defer done()
+
+	p := writeBundleFile(t, "aws-router.hujson", removeBundle)
+	err := runRemove(context.Background(), env, p, "", true)
+	if err == nil {
+		t.Fatal("a failing structural self-check must block the write")
+	}
+	if f.writes != 0 {
+		t.Error("nothing may be written when the structural self-check fails")
+	}
+}
+
+// unreachableMarkerPolicy carries a "ghost" marker two levels deep: on an
+// element of an array that is itself a member of a top-level object. Remove
+// only scans a top-level key and the immediate members/elements of a
+// top-level container, since that is as deep as Apply ever marks anything,
+// so it never reaches this marker or clears it. Namespaces walks the whole
+// tree, though, and does find it, so after Remove the namespace still
+// "looks present" with nothing RemoveBlockers can identify as holding it.
+// This is only reachable by hand-editing the policy; Apply never produces a
+// marker this deep.
+const unreachableMarkerPolicy = `{
+	"grants": {
+		"src": [
+			"a",
+			// scurgery:ghost
+			"b",
+		],
+	},
+}`
+
+func TestRemoveUnidentifiablePresenceGetsAnHonestMessage(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(unreachableMarkerPolicy), etag: `"e1"`, validateOK: true}
+	env, _, done := testEnv(t, f, "")
+	defer done()
+
+	err := runRemove(context.Background(), env, "ghost", "", false)
+	if err == nil {
+		t.Fatal("a namespace that still appears after removal must not report success")
+	}
+	if f.writes != 0 {
+		t.Error("nothing may be written when scurgery cannot identify what is holding the namespace")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "shares a top-level container") {
+		t.Errorf("no shared container was actually found here; asserting one would be untrue, got %q", msg)
+	}
+	if strings.Contains(msg, "still present after removal") {
+		t.Errorf("the raw self-check message should never surface here, got %q", msg)
 	}
 }

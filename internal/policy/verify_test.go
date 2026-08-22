@@ -207,3 +207,125 @@ func TestVerifyRemoveRejectsDeletedOperatorComment(t *testing.T) {
 		t.Error("VerifyRemove must reject a result that deleted an operator's comment")
 	}
 }
+
+// TestVerifyRemoveStructuralAcceptsAGoodRemoval confirms the object-branch
+// path of the independent structural self-check accepts a removal it agrees
+// with, using RemoveStructural's own output as the "after" it checks.
+func TestVerifyRemoveStructuralAcceptsAGoodRemoval(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	applied := applyOK(t, string(orig), bundleTagOwners, "aws-router")
+	stripped := strings.ReplaceAll(string(applied.Policy), "// scurgery:aws-router\n", "")
+
+	res, err := RemoveStructural([]byte(stripped), []byte(bundleTagOwners))
+	if err != nil {
+		t.Fatalf("RemoveStructural: %v", err)
+	}
+	if err := VerifyRemoveStructural([]byte(stripped), res.Policy, []byte(bundleTagOwners)); err != nil {
+		t.Errorf("VerifyRemoveStructural = %v, want nil", err)
+	}
+}
+
+// TestVerifyRemoveStructuralAcceptsAGoodArrayRemoval is the array-branch
+// counterpart of the test above, using removeBundleGrants instead of
+// bundleTagOwners so the exercised container is an array, not an object.
+func TestVerifyRemoveStructuralAcceptsAGoodArrayRemoval(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	applied := applyOK(t, string(orig), removeBundleGrants, "aws-router")
+	stripped := strings.ReplaceAll(string(applied.Policy), "// scurgery:aws-router\n", "")
+
+	res, err := RemoveStructural([]byte(stripped), []byte(removeBundleGrants))
+	if err != nil {
+		t.Fatalf("RemoveStructural: %v", err)
+	}
+	if err := VerifyRemoveStructural([]byte(stripped), res.Policy, []byte(removeBundleGrants)); err != nil {
+		t.Errorf("VerifyRemoveStructural = %v, want nil", err)
+	}
+}
+
+// TestVerifyRemoveStructuralRejectsDeletingAnEditedMember is the governing-
+// principle case: an operator has changed a member's value since scurgery
+// installed it, so it no longer matches the bundle (see
+// TestRemoveStructuralWillNotRemoveAnEditedMember, which confirms
+// RemoveStructural itself will not touch it). If a bug deleted it anyway,
+// VerifyRemoveStructural must catch that independently, without calling
+// RemoveStructural or consulting a marker that no longer exists.
+func TestVerifyRemoveStructuralRejectsDeletingAnEditedMember(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	applied := applyOK(t, string(orig), bundleTagOwners, "aws-router")
+	stripped := strings.ReplaceAll(string(applied.Policy), "// scurgery:aws-router\n", "")
+	edited := strings.Replace(stripped, `["autogroup:admin", "tag:aws-app"]`, `["group:eng"]`, 1)
+	if edited == stripped {
+		t.Fatal("fixture setup failed: the value was not edited")
+	}
+
+	root, err := hujson.Parse([]byte(edited))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	obj := root.Value.(*hujson.Object)
+	tagOwners := findMember(obj, "tagOwners")
+	if tagOwners == nil {
+		t.Fatal("fixture setup failed: tagOwners not found")
+	}
+	inner := tagOwners.Value.Value.(*hujson.Object)
+	var kept []hujson.ObjectMember
+	found := false
+	for _, m := range inner.Members {
+		if memberName(m) == "tag:aws-app" {
+			found = true
+			continue
+		}
+		kept = append(kept, m)
+	}
+	if !found {
+		t.Fatal("fixture setup failed: tag:aws-app not found")
+	}
+	inner.Members = kept
+	damaged := root.Pack()
+
+	if err := VerifyRemoveStructural([]byte(edited), damaged, []byte(bundleTagOwners)); err == nil {
+		t.Error("VerifyRemoveStructural must reject deleting an operator-edited member the bundle no longer matches")
+	}
+}
+
+// TestVerifyRemoveStructuralRejectsDeletingAnEditedArrayElement is the
+// array-branch counterpart: an operator has changed a grant's destination
+// since scurgery installed it (see
+// TestRemoveStructuralWillNotRemoveAnEditedArrayElement), and a bug deletes
+// it anyway.
+func TestVerifyRemoveStructuralRejectsDeletingAnEditedArrayElement(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	applied := applyOK(t, string(orig), removeBundleGrants, "aws-router")
+	stripped := strings.ReplaceAll(string(applied.Policy), "// scurgery:aws-router\n", "")
+	edited := strings.Replace(stripped, `["tag:aws-db"]`, `["tag:aws-other"]`, 1)
+	if edited == stripped {
+		t.Fatal("fixture setup failed: the value was not edited")
+	}
+
+	root, err := hujson.Parse([]byte(edited))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	obj := root.Value.(*hujson.Object)
+	grants := findMember(obj, "grants")
+	if grants == nil {
+		t.Fatal("fixture setup failed: grants not found")
+	}
+	arr := grants.Value.Value.(*hujson.Array)
+	idx := -1
+	for i, el := range arr.Elements {
+		if strings.Contains(compactString(el), "tag:aws-other") {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("fixture setup failed: edited element not found")
+	}
+	arr.Elements = append(arr.Elements[:idx], arr.Elements[idx+1:]...)
+	damaged := root.Pack()
+
+	if err := VerifyRemoveStructural([]byte(edited), damaged, []byte(removeBundleGrants)); err == nil {
+		t.Error("VerifyRemoveStructural must reject deleting an operator-edited array element the bundle no longer matches")
+	}
+}
