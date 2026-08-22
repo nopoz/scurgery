@@ -88,7 +88,7 @@ func writePolicy(
 		return nil
 	}
 
-	backup, err := writeBackup(env.BackupDir, current)
+	backup, err := writeBackup(env.BackupDir, what, current)
 	if err != nil {
 		return fmt.Errorf("writing backup: %w", err)
 	}
@@ -115,18 +115,47 @@ func writePolicy(
 	return nil
 }
 
-func writeBackup(dir string, policy []byte) (string, error) {
+// writeBackup writes the pre-change policy to a new file, never an existing
+// one. Two backups landing in the same second, such as an apply immediately
+// followed by a remove, would otherwise collide on a filename keyed only to
+// the timestamp: os.WriteFile truncates whatever was there, so the second
+// write would silently destroy the first backup, which is exactly the "only
+// copy of the original" a failed operation depends on. what identifies the
+// operation (e.g. "apply aws-router"), so the namespace is in the filename
+// and two different namespaces' backups never contend for the same name;
+// O_EXCL with a counter fallback covers everything else.
+func writeBackup(dir, what string, policy []byte) (string, error) {
 	if dir == "" {
 		dir = "."
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	name := filepath.Join(dir, fmt.Sprintf("policy-backup-%s.hujson", time.Now().UTC().Format("20060102-150405")))
-	if err := os.WriteFile(name, policy, 0o600); err != nil {
-		return "", err
+	slug := strings.ReplaceAll(what, " ", "-")
+	stamp := time.Now().UTC().Format("20060102-150405")
+	for attempt := 0; ; attempt++ {
+		name := fmt.Sprintf("policy-backup-%s-%s.hujson", slug, stamp)
+		if attempt > 0 {
+			name = fmt.Sprintf("policy-backup-%s-%s-%d.hujson", slug, stamp, attempt)
+		}
+		path := filepath.Join(dir, name)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", err
+		}
+		_, writeErr := f.Write(policy)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return "", writeErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+		return path, nil
 	}
-	return name, nil
 }
 
 func confirm(env *Env, prompt string) (bool, error) {

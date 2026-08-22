@@ -123,6 +123,97 @@ func TestWritePolicyWritesBackup(t *testing.T) {
 	}
 }
 
+// TestWriteBackupNeverOverwritesAnExisting reproduces the collision: two
+// backups for the same operation land in the same second, which used to key
+// the filename by timestamp alone. os.WriteFile truncates, so the second
+// backup silently destroyed the first, exactly the "only copy of the
+// original" the backup exists to preserve.
+func TestWriteBackupNeverOverwritesAnExisting(t *testing.T) {
+	dir := t.TempDir()
+
+	p1, err := writeBackup(dir, "apply aws-router", []byte("first"))
+	if err != nil {
+		t.Fatalf("writeBackup 1: %v", err)
+	}
+	p2, err := writeBackup(dir, "apply aws-router", []byte("second"))
+	if err != nil {
+		t.Fatalf("writeBackup 2: %v", err)
+	}
+	if p1 == p2 {
+		t.Fatalf("two backups for the same operation collided on one filename: %s", p1)
+	}
+
+	b1, err := os.ReadFile(p1)
+	if err != nil {
+		t.Fatalf("reading %s: %v", p1, err)
+	}
+	b2, err := os.ReadFile(p2)
+	if err != nil {
+		t.Fatalf("reading %s: %v", p2, err)
+	}
+	if string(b1) != "first" {
+		t.Errorf("first backup content = %q, want %q: it must not have been overwritten by the second", b1, "first")
+	}
+	if string(b2) != "second" {
+		t.Errorf("second backup content = %q, want %q", b2, "second")
+	}
+	if !strings.Contains(p1, "aws-router") {
+		t.Errorf("backup filename should include the namespace, got %q", p1)
+	}
+}
+
+// TestWritePolicyBackupsForConsecutiveWritesBothSurvive is the same
+// collision reproduced through the real write path: an apply immediately
+// followed by a remove, both landing in the same backup directory, must
+// leave two files behind holding the two different pre-change policies, not
+// one file where the second write clobbered the first.
+func TestWritePolicyBackupsForConsecutiveWritesBothSurvive(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"grants": []}`), etag: `"e1"`, validateOK: true}
+	env, _, done := testEnv(t, f, "")
+	defer done()
+
+	if err := writePolicy(context.Background(), env, "apply aws-router", func(cur []byte) ([]byte, error) {
+		return []byte(`{"grants": [1]}`), nil
+	}, nil); err != nil {
+		t.Fatalf("writePolicy 1: %v", err)
+	}
+	if err := writePolicy(context.Background(), env, "apply aws-router", func(cur []byte) ([]byte, error) {
+		return []byte(`{"grants": [1, 2]}`), nil
+	}, nil); err != nil {
+		t.Fatalf("writePolicy 2: %v", err)
+	}
+
+	entries, err := os.ReadDir(env.BackupDir)
+	if err != nil {
+		t.Fatalf("reading backup dir: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected two distinct backup files, got %d: %v", len(entries), entries)
+	}
+	var contents []string
+	for _, e := range entries {
+		b, err := os.ReadFile(env.BackupDir + "/" + e.Name())
+		if err != nil {
+			t.Fatalf("reading %s: %v", e.Name(), err)
+		}
+		contents = append(contents, string(b))
+	}
+	if contents[0] == contents[1] {
+		t.Errorf("both backups hold the same content; the first write's backup should not have been overwritten, got %v", contents)
+	}
+	want := map[string]bool{`{"grants": []}`: false, `{"grants": [1]}`: false}
+	for _, c := range contents {
+		if _, ok := want[c]; ok {
+			want[c] = true
+		}
+	}
+	for c, found := range want {
+		if !found {
+			t.Errorf("expected a backup holding %q, got %v", c, contents)
+		}
+	}
+}
+
 func TestWritePolicyNoOpWritesNothing(t *testing.T) {
 	f := &fakeTailnet{policy: []byte(`{"grants": []}`), etag: `"e1"`, validateOK: true}
 	env, out, done := testEnv(t, f, "")
