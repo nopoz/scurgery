@@ -121,7 +121,7 @@ func TestRemoveStructuralWhenMarkersAreGone(t *testing.T) {
 	}
 }
 
-func TestRemoveStructuralReportsEditedMembers(t *testing.T) {
+func TestRemoveStructuralReportsAbsentMembers(t *testing.T) {
 	orig := loadFixture(t, "realistic.hujson")
 	res, err := RemoveStructural(orig, []byte(bundleTagOwners))
 	if err != nil {
@@ -129,6 +129,32 @@ func TestRemoveStructuralReportsEditedMembers(t *testing.T) {
 	}
 	if res.Removed != 0 {
 		t.Errorf("Removed = %d, want 0", res.Removed)
+	}
+	if len(res.Unmatched) != 1 || !strings.Contains(res.Unmatched[0], "tag:aws-app") {
+		t.Errorf("Unmatched = %v, want one entry naming tag:aws-app", res.Unmatched)
+	}
+}
+
+func TestRemoveStructuralWillNotRemoveAnEditedMember(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	applied := applyOK(t, string(orig), bundleTagOwners, "aws-router")
+
+	// Markers gone, and the operator has since changed the value.
+	stripped := strings.ReplaceAll(string(applied.Policy), "// scurgery:aws-router\n", "")
+	edited := strings.Replace(stripped, `["autogroup:admin", "tag:aws-app"]`, `["group:eng"]`, 1)
+	if edited == stripped {
+		t.Fatal("fixture setup failed: the value was not edited")
+	}
+
+	res, err := RemoveStructural([]byte(edited), []byte(bundleTagOwners))
+	if err != nil {
+		t.Fatalf("RemoveStructural: %v", err)
+	}
+	if res.Removed != 0 {
+		t.Errorf("Removed = %d, want 0: an edited member must not be removed", res.Removed)
+	}
+	if !strings.Contains(string(res.Policy), "group:eng") {
+		t.Error("the operator's edited value must survive untouched")
 	}
 	if len(res.Unmatched) != 1 || !strings.Contains(res.Unmatched[0], "tag:aws-app") {
 		t.Errorf("Unmatched = %v, want one entry naming tag:aws-app", res.Unmatched)
