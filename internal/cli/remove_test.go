@@ -44,6 +44,46 @@ func TestRemoveByNameUsesMarkers(t *testing.T) {
 	}
 }
 
+// TestRemoveMatchStructuralRejectedForBareName reproduces the recovery-path
+// trap: an operator whose markers are gone runs `remove <name> --match-structural`
+// expecting the structural fallback, but a bare namespace has no bundle to
+// compare against, so structural matching can never run for it. Before the
+// fix this silently reported "no change needed" with a zero exit, which
+// reads as "nothing is installed" when it may not be true at all.
+func TestRemoveMatchStructuralRejectedForBareName(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(installedPolicy), etag: `"e1"`, validateOK: true}
+	env, _, done := testEnv(t, f, "")
+	defer done()
+
+	err := runRemove(context.Background(), env, "aws-router", "", true)
+	if err == nil {
+		t.Fatal("--match-structural with a bare namespace should be rejected, not silently ignored")
+	}
+	if f.writes != 0 {
+		t.Error("a rejected call must not write")
+	}
+	if !strings.Contains(err.Error(), "remove <bundle.hujson>") {
+		t.Errorf("the rejection should point at the bundle-path form, got %q", err.Error())
+	}
+}
+
+// TestRemoveNameFlagRejectedForBareName closes the related trap where
+// `remove <name> --name <other>` silently discarded the positional and
+// removed <other> instead.
+func TestRemoveNameFlagRejectedForBareName(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(installedPolicy), etag: `"e1"`, validateOK: true}
+	env, _, done := testEnv(t, f, "")
+	defer done()
+
+	err := runRemove(context.Background(), env, "aws-router", "some-other-name", false)
+	if err == nil {
+		t.Fatal("--name with a bare namespace should be rejected, not silently swap the target")
+	}
+	if f.writes != 0 {
+		t.Error("a rejected call must not write")
+	}
+}
+
 func TestRemoveRefusesStructuralWithoutTheFlag(t *testing.T) {
 	f := &fakeTailnet{policy: []byte(strippedPolicy), etag: `"e1"`, validateOK: true}
 	env, out, done := testEnv(t, f, "")

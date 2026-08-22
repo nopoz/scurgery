@@ -37,8 +37,17 @@ func runRemove(ctx context.Context, env *Env, target, nameOverride string, match
 			return err
 		}
 		name = b.Name
-	} else if nameOverride != "" {
-		name = nameOverride
+	} else {
+		// Structural matching and --name both need a bundle to make sense
+		// of: --match-structural has nothing to compare against without one,
+		// and --name would otherwise silently discard the positional
+		// namespace and remove some other name entirely.
+		if matchStructural {
+			return fmt.Errorf("--match-structural needs a bundle file to match against: run `scurgery remove <bundle.hujson> --match-structural`, not `remove %s --match-structural`", target)
+		}
+		if nameOverride != "" {
+			return fmt.Errorf("--name only applies when removing by bundle file: run `scurgery remove <bundle.hujson> --name %s`, not `remove %s --name %s`", nameOverride, target, nameOverride)
+		}
 	}
 
 	// policy.VerifyRemove checks that everything Remove did not mark for ns
