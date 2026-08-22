@@ -58,6 +58,35 @@ func TestLoadRejectsNameDerivedFromBadFilename(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsBundleContainingAScurgeryMarker reproduces the wedge: a
+// bundle carrying a leftover scurgery marker, most plausibly from copying a
+// block out of an already-managed policy file, would install a phantom
+// namespace scurgery never actually applied. containerSharedWithOtherNamespace
+// then treats that phantom namespace as a permanent co-owner, and its
+// removal is impossible since it was never really installed. Load must
+// refuse the bundle before any of that can happen.
+func TestLoadRejectsBundleContainingAScurgeryMarker(t *testing.T) {
+	p := write(t, "aws-router.hujson", `{
+		"tagOwners": {
+			// scurgery:evil
+			"tag:a": ["autogroup:admin"],
+		},
+	}`)
+	if _, err := Load(p, ""); err == nil {
+		t.Error("Load should reject a bundle that already carries a scurgery marker")
+	}
+}
+
+func TestLoadRejectsBundleContainingAnOwnsKeyMarker(t *testing.T) {
+	p := write(t, "aws-router.hujson", `{
+		// scurgery:evil owns-key
+		"nodeAttrs": [{"target": ["tag:a"], "attr": ["funnel"]}],
+	}`)
+	if _, err := Load(p, ""); err == nil {
+		t.Error("Load should reject a bundle that already carries an owns-key marker")
+	}
+}
+
 func TestLoadRejectsMissingFile(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "nope.hujson"), ""); err == nil {
 		t.Error("Load should report a missing file")

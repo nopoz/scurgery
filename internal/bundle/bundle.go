@@ -36,6 +36,18 @@ func Load(path, nameOverride string) (*Bundle, error) {
 		return nil, fmt.Errorf("bundle %s must be a JSON object", path)
 	}
 
+	// scurgery adds its own markers on apply; a bundle that already carries
+	// one, most plausibly from copying a block out of an already-managed
+	// policy file, would carry a phantom namespace into the live policy that
+	// was never actually installed, and that namespace's removal would then
+	// wedge forever on a container it does not really co-own.
+	if ns, err := policy.Namespaces(data); err != nil {
+		return nil, fmt.Errorf("checking bundle %s for scurgery markers: %w", path, err)
+	} else if len(ns) > 0 {
+		return nil, fmt.Errorf("bundle %s already contains scurgery marker(s) for %v: markers are added "+
+			"automatically on apply and must not appear in a bundle", path, ns)
+	}
+
 	name := nameOverride
 	if name == "" {
 		base := filepath.Base(path)
