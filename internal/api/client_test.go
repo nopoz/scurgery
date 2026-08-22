@@ -1,12 +1,19 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+)
+
+const (
+	wantValidatePath = "/api/v2/tailnet/example.com/acl/validate"
+	wantSetPath      = "/api/v2/tailnet/example.com/acl"
 )
 
 func newTestClient(h http.Handler) (*Client, func()) {
@@ -47,6 +54,12 @@ func TestGetPolicyReturnsBodyAndETag(t *testing.T) {
 // The trap: validate signals failure with a non-empty body and HTTP 200.
 func TestValidateTreatsNonEmptyBodyAsFailure(t *testing.T) {
 	c, done := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Method, http.MethodPost; got != want {
+			t.Errorf("method = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Path, wantValidatePath; got != want {
+			t.Errorf("path = %q, want %q", got, want)
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"message":"tag not found: \"tag:nope\""}`))
 	}))
@@ -64,6 +77,12 @@ func TestValidateTreatsNonEmptyBodyAsFailure(t *testing.T) {
 func TestValidateAcceptsEmptyBody(t *testing.T) {
 	for _, body := range []string{"", "{}", "  \n"} {
 		c, done := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got, want := r.Method, http.MethodPost; got != want {
+				t.Errorf("method = %q, want %q", got, want)
+			}
+			if got, want := r.URL.Path, wantValidatePath; got != want {
+				t.Errorf("path = %q, want %q", got, want)
+			}
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(body))
 		}))
@@ -75,24 +94,44 @@ func TestValidateAcceptsEmptyBody(t *testing.T) {
 }
 
 func TestSetPolicySendsIfMatch(t *testing.T) {
+	wantBody := []byte(`{}`)
 	c, done := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Method, http.MethodPost; got != want {
+			t.Errorf("method = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Path, wantSetPath; got != want {
+			t.Errorf("path = %q, want %q", got, want)
+		}
 		if got, want := r.Header.Get("If-Match"), `"abc123"`; got != want {
 			t.Errorf("If-Match = %q, want %q", got, want)
 		}
 		if got, want := r.Header.Get("Content-Type"), "application/hujson"; got != want {
 			t.Errorf("Content-Type = %q, want %q", got, want)
 		}
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("reading request body: %v", err)
+		}
+		if !bytes.Equal(got, wantBody) {
+			t.Errorf("body = %q, want %q", got, wantBody)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer done()
 
-	if err := c.SetPolicy(context.Background(), []byte(`{}`), `"abc123"`); err != nil {
+	if err := c.SetPolicy(context.Background(), wantBody, `"abc123"`); err != nil {
 		t.Fatalf("SetPolicy: %v", err)
 	}
 }
 
 func TestSetPolicyReports412Distinctly(t *testing.T) {
 	c, done := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Method, http.MethodPost; got != want {
+			t.Errorf("method = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Path, wantSetPath; got != want {
+			t.Errorf("path = %q, want %q", got, want)
+		}
 		w.WriteHeader(http.StatusPreconditionFailed)
 		w.Write([]byte(`{"message":"precondition failed, invalid old hash"}`))
 	}))
@@ -106,6 +145,12 @@ func TestSetPolicyReports412Distinctly(t *testing.T) {
 
 func TestSetPolicyReportsValidationError(t *testing.T) {
 	c, done := newTestClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Method, http.MethodPost; got != want {
+			t.Errorf("method = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Path, wantSetPath; got != want {
+			t.Errorf("path = %q, want %q", got, want)
+		}
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(`{"message":"bad acl"}`))
 	}))
