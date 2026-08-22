@@ -88,12 +88,15 @@ func TestVerifyApplyAcceptsAReapply(t *testing.T) {
 			"tag:aws-app": ["autogroup:admin", "tag:aws-app", "tag:extra"],
 		},
 	}`
-	second, err := Apply(first.Policy, []byte(updated), "aws-router", ApplyOptions{Force: true})
+	// The changed member already carries aws-router's own marker from the
+	// first apply, so this is an update to scurgery's own value, not a
+	// collision with something else's content: no --force is needed.
+	second, err := Apply(first.Policy, []byte(updated), "aws-router", ApplyOptions{})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(second.Conflicts) != 1 {
-		t.Fatalf("Conflicts = %d, want 1: the update must collide with the previously installed value", len(second.Conflicts))
+	if len(second.Conflicts) != 0 {
+		t.Fatalf("Conflicts = %d, want 0: updating a value scurgery's own marker already covers must not conflict", len(second.Conflicts))
 	}
 	if err := VerifyApply(first.Policy, second.Policy, "aws-router"); err != nil {
 		t.Errorf("VerifyApply = %v, want nil: an update to an already-installed namespace is legitimate", err)

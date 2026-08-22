@@ -55,7 +55,7 @@ func runApply(ctx context.Context, env *Env, bundlePath, nameOverride string, op
 					"scurgery's local self-check does not run on a forced overwrite, so review the diff above before confirming.\n", len(res.Conflicts))
 			}
 		}
-		fmt.Fprintf(env.Out, "adding %d, skipping %d already present\n", res.Added, res.Skipped)
+		fmt.Fprintf(env.Out, "adding %d, updating %d, skipping %d already present\n", res.Added, res.Updated, res.Skipped)
 		return res.Policy, nil
 	}, verify)
 }

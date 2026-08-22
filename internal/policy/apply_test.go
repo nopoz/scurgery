@@ -220,6 +220,52 @@ func TestApplyMatchesGoldenOutput(t *testing.T) {
 	}
 }
 
+// Re-applying a bundle for a namespace already installed, with a changed
+// member value, must overwrite in place rather than report a conflict: the
+// value "currently in your policy" is scurgery's own, under its own marker,
+// so this is an update to something scurgery owns, not a clash with content
+// it doesn't. It must stay reversible: VerifyApply must accept it, and
+// Remove must still restore the pre-apply original byte-for-byte.
+func TestApplyReappliedUpdatedBundleOverwritesOwnValueNoConflict(t *testing.T) {
+	orig := string(loadFixture(t, "realistic.hujson"))
+	const first = `{"tagOwners": {"tag:beta": ["autogroup:admin"]}}`
+	const updated = `{"tagOwners": {"tag:beta": ["autogroup:admin", "tag:beta"]}}`
+
+	once := applyOK(t, orig, first, "aws-router")
+
+	twice, err := Apply(once.Policy, []byte(updated), "aws-router", ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(twice.Conflicts) != 0 {
+		t.Fatalf("re-applying an updated value for scurgery's own namespace must not conflict, got %+v", twice.Conflicts)
+	}
+	if twice.Policy == nil {
+		t.Fatal("a re-apply with no conflicts must produce a policy")
+	}
+	if twice.Updated != 1 {
+		t.Errorf("Updated = %d, want 1", twice.Updated)
+	}
+	if !strings.Contains(string(twice.Policy), `["autogroup:admin", "tag:beta"]`) {
+		t.Error("the updated value should be in the result")
+	}
+	if !strings.Contains(string(twice.Policy), "// scurgery:aws-router\n") {
+		t.Error("the marker must survive the in-place overwrite")
+	}
+
+	if err := VerifyApply(once.Policy, twice.Policy, "aws-router"); err != nil {
+		t.Errorf("VerifyApply must accept an in-place update of scurgery's own value, got %v", err)
+	}
+
+	removed, err := Remove(twice.Policy, "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(removed.Policy) != orig {
+		t.Errorf("remove after a re-applied update did not restore the original\n--- want ---\n%s\n--- got ---\n%s", orig, removed.Policy)
+	}
+}
+
 // TestApplyOnTopLevelScalar exercises the default (non-container) branch,
 // which realistic.hujson never triggers since it has no top-level scalar.
 // randomizeClientPort and disableIPv4 are real top-level scalar policy

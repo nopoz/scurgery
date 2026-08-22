@@ -107,6 +107,47 @@ func TestRunApplySkipConflictsKeepsSelfCheck(t *testing.T) {
 	}
 }
 
+// TestRunApplyReappliedUpdateOverwritesOwnValueWithoutForce reproduces
+// re-applying a bundle whose member value changed for a namespace already
+// installed. It must not be reported as a conflict, must not need --force,
+// and the self-check must still run and pass, since only scurgery's own
+// marked value changed.
+func TestRunApplyReappliedUpdateOverwritesOwnValueWithoutForce(t *testing.T) {
+	calls := 0
+	orig := applyVerify
+	applyVerify = func(before, after []byte, ns string) error {
+		calls++
+		return orig(before, after, ns)
+	}
+	defer func() { applyVerify = orig }()
+
+	f := &fakeTailnet{policy: []byte(`{"tagOwners": {}}`), etag: `"e1"`, validateOK: true}
+	env, out, done := testEnv(t, f, "")
+	defer done()
+
+	path := writeBundleFile(t, "test.hujson", `{"tagOwners": {"tag:beta": ["autogroup:admin"]}}`)
+	if err := runApply(context.Background(), env, path, "", policy.ApplyOptions{}); err != nil {
+		t.Fatalf("runApply (first): %v", err)
+	}
+
+	updatedPath := writeBundleFile(t, "test.hujson", `{"tagOwners": {"tag:beta": ["autogroup:admin", "tag:beta"]}}`)
+	if err := runApply(context.Background(), env, updatedPath, "", policy.ApplyOptions{}); err != nil {
+		t.Fatalf("runApply (updated, no --force): %v", err)
+	}
+	if f.writes != 2 {
+		t.Errorf("writes = %d, want 2", f.writes)
+	}
+	if !strings.Contains(string(f.policy), `["autogroup:admin", "tag:beta"]`) {
+		t.Errorf("policy should hold the updated value, got %q", f.policy)
+	}
+	if strings.Contains(out.String(), "conflict at") {
+		t.Errorf("re-applying an update to scurgery's own value must not be reported as a conflict, got %q", out.String())
+	}
+	if calls == 0 {
+		t.Error("the self-check must run for a re-applied update, since it did not need --force")
+	}
+}
+
 func TestRunApplyBlocksOnConflictWithoutForce(t *testing.T) {
 	f := &fakeTailnet{
 		policy:     []byte(`{"tagOwners": {"tag:subnet-router": ["autogroup:admin"]}}`),

@@ -22,11 +22,15 @@ type ApplyOptions struct {
 }
 
 // ApplyResult carries the merged policy, or a nil Policy when conflicts
-// blocked the operation. When Policy is nil, Added and Skipped are
+// blocked the operation. When Policy is nil, Added, Updated and Skipped are
 // meaningless: they reflect a merge that was not applied.
 type ApplyResult struct {
-	Policy    []byte
-	Added     int
+	Policy []byte
+	Added  int
+	// Updated counts a member that already carried ns's own marker and whose
+	// value changed: re-applying an updated bundle for a namespace scurgery
+	// already installed, not a conflict with something else's content.
+	Updated   int
 	Skipped   int
 	Conflicts []Conflict
 }
@@ -109,6 +113,19 @@ func Apply(policy, bundle []byte, ns string, opts ApplyOptions) (*ApplyResult, e
 						res.Skipped++
 						continue
 					}
+					if hasMarker(existing.Name.BeforeExtra, ns) {
+						// This member is scurgery's own from a previous
+						// apply of the same namespace: an updated bundle
+						// value overwrites it in place. The marker already
+						// names ns, so this is not a conflict with content
+						// scurgery does not own, and it stays reversible.
+						nv := m.Value
+						nv.BeforeExtra = existing.Value.BeforeExtra
+						nv.AfterExtra = existing.Value.AfterExtra
+						existing.Value = nv
+						res.Updated++
+						continue
+					}
 					res.Conflicts = append(res.Conflicts, Conflict{
 						Path:     fmt.Sprintf("%s.%q", key, name),
 						Existing: compactString(existing.Value),
@@ -162,6 +179,17 @@ func Apply(policy, bundle []byte, ns string, opts ApplyOptions) (*ApplyResult, e
 			if semanticEqual(target.Value, bm.Value) {
 				res.Skipped++
 				continue
+			}
+			if hasMarker(target.Name.BeforeExtra, ns) {
+				// scurgery's own top-level scalar from a previous apply of
+				// the same namespace: overwrite in place, see the object
+				// branch above for why this is not a conflict.
+				nv := bm.Value
+				nv.BeforeExtra = target.Value.BeforeExtra
+				nv.AfterExtra = target.Value.AfterExtra
+				target.Value = nv
+				res.Updated++
+				break
 			}
 			res.Conflicts = append(res.Conflicts, Conflict{
 				Path:     key,
