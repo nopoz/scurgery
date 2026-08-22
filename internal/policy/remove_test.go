@@ -191,6 +191,59 @@ func TestNamespacesFindsArrayElementMarker(t *testing.T) {
 	}
 }
 
+// TestRemoveDropsOwnedContainerWhoseOnlyMarkersAreItsOwn pins
+// containerSharedWithOtherNamespace's distinction between "another namespace
+// marked something in here" and "this namespace marked something in here
+// twice". A container ns created (owns-key), into which a later apply of the
+// same ns added a second element, must still be removed as a whole: the
+// child's own "// scurgery:ns" marker is not some other namespace sharing
+// the container, it's ns's own second contribution to it.
+//
+// A mutant that drops the "!= ns" half of otherNamespaceMarker's condition
+// treats that child marker as foreign, so containerSharedWithOtherNamespace
+// wrongly reports the container shared and Remove leaves the (now emptied)
+// key behind. Namespaces then still finds the surviving owns-key marker and
+// reports ns present, RemoveBlockers finds no real blocker since nothing
+// else actually marks the container, and runRemove's caller is left with an
+// "unidentifiable presence" error it can never resolve: the container's
+// removal is refused forever, which is exactly the bug this test exists to
+// catch.
+func TestRemoveDropsOwnedContainerWhoseOnlyMarkersAreItsOwn(t *testing.T) {
+	orig := loadFixture(t, "minimal.hujson")
+
+	first := applyOK(t, string(orig), `{"nodeAttrs": [{"target": ["tag:a"], "attr": ["funnel"]}]}`, "aws-router")
+	if !strings.Contains(string(first.Policy), "owns-key") {
+		t.Fatal("fixture setup failed: the first apply should have created nodeAttrs with an owns-key marker")
+	}
+
+	second := applyOK(t, string(first.Policy), `{"nodeAttrs": [
+		{"target": ["tag:a"], "attr": ["funnel"]},
+		{"target": ["tag:b"], "attr": ["funnel"]}
+	]}`, "aws-router")
+	if second.Added != 1 {
+		t.Fatalf("second apply Added = %d, want 1 (only tag:b is new)", second.Added)
+	}
+
+	res, err := Remove(second.Policy, "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if strings.Contains(string(res.Policy), "nodeAttrs") {
+		t.Error("nodeAttrs was created entirely by aws-router across two applies and should be removed as a whole")
+	}
+	if string(res.Policy) != string(orig) {
+		t.Errorf("remove did not restore the original byte-for-byte\n--- want ---\n%s\n--- got ---\n%s", orig, res.Policy)
+	}
+
+	names, err := Namespaces(res.Policy)
+	if err != nil {
+		t.Fatalf("Namespaces: %v", err)
+	}
+	if len(names) != 0 {
+		t.Errorf("Namespaces = %v, want none: aws-router should be fully gone", names)
+	}
+}
+
 func TestRemoveStructuralWhenMarkersAreGone(t *testing.T) {
 	orig := loadFixture(t, "realistic.hujson")
 	applied := applyOK(t, string(orig), bundleTagOwners, "aws-router")
