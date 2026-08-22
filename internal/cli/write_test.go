@@ -208,3 +208,52 @@ func TestWritePolicyExplains412(t *testing.T) {
 		t.Errorf("a 412 should be explained in terms the operator can act on, got %v", err)
 	}
 }
+
+// A missing ETag means the write can no longer be a compare-and-swap: it
+// would silently become an unconditional overwrite, since SetPolicy omits
+// If-Match entirely when the etag is empty. Refuse rather than write blind.
+func TestWritePolicyRefusesWithoutETag(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"grants": []}`), etag: "", validateOK: true}
+	env, _, done := testEnv(t, f, "")
+	defer done()
+
+	err := writePolicy(context.Background(), env, "test", func(cur []byte) ([]byte, error) {
+		return []byte(`{"grants": [1]}`), nil
+	}, nil)
+	if err == nil {
+		t.Fatal("writePolicy should refuse to write when the read returned no ETag")
+	}
+	if !strings.Contains(err.Error(), "ETag") {
+		t.Errorf("the error should explain that the ETag was missing, got %v", err)
+	}
+	if f.writes != 0 {
+		t.Error("nothing may be written without an ETag to condition on")
+	}
+}
+
+// The backup exists to survive total failure: it must be on disk before the
+// write to the tailnet is even attempted, not just on the success path.
+func TestWritePolicyBackupPrecedesFailedWrite(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"grants": []}`), etag: `"e1"`, validateOK: true}
+	env, _, done := testEnv(t, f, "")
+	defer done()
+
+	err := writePolicy(context.Background(), env, "test", func(cur []byte) ([]byte, error) {
+		f.etag = `"changed-underneath"` // force SetPolicy to 412
+		return []byte(`{"grants": [1]}`), nil
+	}, nil)
+	if err == nil {
+		t.Fatal("expected the write to fail")
+	}
+	if f.writes != 0 {
+		t.Error("a failed write must not have written anything")
+	}
+	entries, _ := os.ReadDir(env.BackupDir)
+	if len(entries) != 1 {
+		t.Fatalf("expected the backup to exist despite the failed write, got %d entries", len(entries))
+	}
+	b, _ := os.ReadFile(env.BackupDir + "/" + entries[0].Name())
+	if string(b) != `{"grants": []}` {
+		t.Errorf("backup should hold the pre-change policy, got %q", b)
+	}
+}

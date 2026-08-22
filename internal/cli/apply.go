@@ -36,7 +36,7 @@ func runApply(ctx context.Context, env *Env, bundlePath, nameOverride string, op
 		}
 		if len(res.Conflicts) > 0 {
 			for _, c := range res.Conflicts {
-				fmt.Fprintf(env.Out, "conflict at %s\n  yours:  %s\n  theirs: %s\n", c.Path, c.Incoming, c.Existing)
+				fmt.Fprintf(env.Out, "conflict at %s\n  bundle:               %s\n  currently in your policy: %s\n", c.Path, c.Incoming, c.Existing)
 			}
 			if res.Policy == nil {
 				return nil, fmt.Errorf("%d conflict(s); nothing was changed. Re-run with --force to overwrite, or --skip-conflicts to install the rest", len(res.Conflicts))
@@ -45,7 +45,8 @@ func runApply(ctx context.Context, env *Env, bundlePath, nameOverride string, op
 				forcedOverwrite = true
 				fmt.Fprintf(env.Out, "warning: --force overwrote %d existing value(s) shown above. "+
 					"scurgery does not mark what it replaced, so `scurgery remove` cannot restore it; "+
-					"the backup taken before this write is the only copy of the original.\n", len(res.Conflicts))
+					"the backup taken before this write is the only copy of the original. "+
+					"scurgery's local self-check does not run on a forced overwrite, so review the diff above before confirming.\n", len(res.Conflicts))
 			}
 		}
 		fmt.Fprintf(env.Out, "adding %d, skipping %d already present\n", res.Added, res.Skipped)

@@ -35,9 +35,10 @@ var ErrDeclined = errors.New("declined")
 //  2. compute the new policy
 //  3. self-check: assert scurgery changed only what it owns
 //  4. ask the server to validate it, requiring an empty body
-//  5. back up the pre-change policy locally
-//  6. show a diff and confirm
-//  7. write conditionally on the ETag
+//  5. show a diff (a dry run stops here)
+//  6. back up the pre-change policy locally
+//  7. confirm
+//  8. write conditionally on the ETag
 //
 // Steps 3 and 4 are independent checks on the same claim: 3 catches "scurgery
 // mangled something", 4 catches "Tailscale will not accept this".
@@ -53,6 +54,9 @@ func writePolicy(
 	current, etag, err := env.Client.GetPolicy(ctx)
 	if err != nil {
 		return err
+	}
+	if etag == "" {
+		return fmt.Errorf("%s: the tailnet did not return an ETag, so scurgery cannot write back safely with a compare-and-swap; refusing to write", what)
 	}
 
 	next, err := mutate(current)

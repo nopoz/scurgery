@@ -35,7 +35,7 @@ func TestRunApplyAddsBundleContents(t *testing.T) {
 	if !strings.Contains(string(f.policy), "group:eng") {
 		t.Errorf("policy should contain the bundle's contribution, got %q", f.policy)
 	}
-	if strings.Contains(out.String(), "does not record") {
+	if strings.Contains(out.String(), "--force overwrote") {
 		t.Errorf("no force warning should appear when nothing was overwritten, got %q", out.String())
 	}
 }
@@ -58,8 +58,14 @@ func TestRunApplyForceWarnsThatOverwriteIsUnrecoverable(t *testing.T) {
 		t.Errorf("writes = %d, want 1", f.writes)
 	}
 	got := out.String()
-	if !strings.Contains(got, "cannot restore") && !strings.Contains(got, "does not record") {
+	if !strings.Contains(got, "--force overwrote") {
+		t.Errorf("force overwrite should warn that it happened, got %q", got)
+	}
+	if !strings.Contains(got, "cannot restore") {
 		t.Errorf("force overwrite should warn that it cannot be undone by remove, got %q", got)
+	}
+	if !strings.Contains(got, "self-check does not run") {
+		t.Errorf("force overwrite should warn that scurgery's self-check was skipped for this write, got %q", got)
 	}
 }
 
