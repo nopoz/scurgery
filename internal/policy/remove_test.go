@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+const removeBundleGrants = `{
+	"grants": [
+		{"src": ["tag:aws-app"], "dst": ["tag:aws-db"], "ip": ["*"]},
+	],
+}`
+
 func TestRemoveRestoresOriginal(t *testing.T) {
 	orig := loadFixture(t, "realistic.hujson")
 	applied := applyOK(t, string(orig), bundleTagOwners, "aws-router")
@@ -158,5 +164,31 @@ func TestRemoveStructuralWillNotRemoveAnEditedMember(t *testing.T) {
 	}
 	if len(res.Unmatched) != 1 || !strings.Contains(res.Unmatched[0], "tag:aws-app") {
 		t.Errorf("Unmatched = %v, want one entry naming tag:aws-app", res.Unmatched)
+	}
+}
+
+func TestRemoveStructuralWillNotRemoveAnEditedArrayElement(t *testing.T) {
+	orig := loadFixture(t, "realistic.hujson")
+	applied := applyOK(t, string(orig), removeBundleGrants, "aws-router")
+
+	// Markers gone, and the operator has since changed the value.
+	stripped := strings.ReplaceAll(string(applied.Policy), "// scurgery:aws-router\n", "")
+	edited := strings.Replace(stripped, `["tag:aws-db"]`, `["tag:aws-other"]`, 1)
+	if edited == stripped {
+		t.Fatal("fixture setup failed: the value was not edited")
+	}
+
+	res, err := RemoveStructural([]byte(edited), []byte(removeBundleGrants))
+	if err != nil {
+		t.Fatalf("RemoveStructural: %v", err)
+	}
+	if res.Removed != 0 {
+		t.Errorf("Removed = %d, want 0: an edited element must not be removed", res.Removed)
+	}
+	if len(res.Unmatched) != 1 {
+		t.Errorf("Unmatched = %v, want one entry", res.Unmatched)
+	}
+	if !strings.Contains(string(res.Policy), `"src": ["*"]`) || !strings.Contains(string(res.Policy), `"dst": ["*"]`) {
+		t.Error("the operator's original catch-all grant must survive; an unconditional match would delete it instead")
 	}
 }
