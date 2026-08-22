@@ -28,6 +28,12 @@ Credentials come from the environment:
   TS_TAILNET   the tailnet name, as shown in the admin console
 `
 
+// newClient is api.New behind a package variable so tests can point Run at a
+// fake server. Unlike an environment variable it is not settable at runtime,
+// so it cannot become a way for anyone but the test binary itself to
+// redirect where credentials and policy bodies are sent.
+var newClient = api.New
+
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
@@ -35,6 +41,18 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	}
 
 	cmd, rest := args[0], args[1:]
+
+	if cmd == "help" || cmd == "-h" || cmd == "--help" {
+		fmt.Fprint(stdout, usage)
+		return 0
+	}
+
+	switch cmd {
+	case "apply", "remove", "status", "diff":
+	default:
+		fmt.Fprintf(stderr, "error: unknown command %q\n\n%s", cmd, usage)
+		return 2
+	}
 
 	fs := flag.NewFlagSet("scurgery "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -52,10 +70,25 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
+	if len(positional) > 1 {
+		fmt.Fprintf(stderr, "error: too many arguments: %s\n", strings.Join(positional, ", "))
+		return 2
+	}
 
-	if cmd == "help" || cmd == "-h" || cmd == "--help" {
-		fmt.Fprint(stdout, usage)
-		return 0
+	var bundleOrName string
+	switch cmd {
+	case "apply", "diff":
+		if len(positional) < 1 {
+			fmt.Fprintf(stderr, "error: %s needs a bundle file\n", cmd)
+			return 2
+		}
+		bundleOrName = positional[0]
+	case "remove":
+		if len(positional) < 1 {
+			fmt.Fprintln(stderr, "error: remove needs a bundle name or file")
+			return 2
+		}
+		bundleOrName = positional[0]
 	}
 
 	token := os.Getenv("TS_API_KEY")
@@ -68,13 +101,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return 1
 	}
 
-	client := api.New(token, *tailnet)
-	if base := os.Getenv("TS_BASE_URL"); base != "" {
-		client.BaseURL = base
-	}
-
 	env := &Env{
-		Client:    client,
+		Client:    newClient(token, *tailnet),
 		Out:       stdout,
 		In:        stdin,
 		BackupDir: *backupDir,
@@ -85,30 +113,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	var err error
 	switch cmd {
 	case "apply":
-		if len(positional) < 1 {
-			fmt.Fprintln(stderr, "error: apply needs a bundle file")
-			return 2
-		}
-		err = runApply(ctx, env, positional[0], *name, policy.ApplyOptions{Force: *force, SkipConflicts: *skipConflicts})
+		err = runApply(ctx, env, bundleOrName, *name, policy.ApplyOptions{Force: *force, SkipConflicts: *skipConflicts})
 	case "remove":
-		if len(positional) < 1 {
-			fmt.Fprintln(stderr, "error: remove needs a bundle name or file")
-			return 2
-		}
-		err = runRemove(ctx, env, positional[0], *name, *matchStructural)
+		err = runRemove(ctx, env, bundleOrName, *name, *matchStructural)
 	case "status":
 		err = runStatus(ctx, env)
 	case "diff":
-		if len(positional) < 1 {
-			fmt.Fprintln(stderr, "error: diff needs a bundle file")
-			return 2
-		}
 		env.DryRun = true
 		env.AssumeYes = true
-		err = runApply(ctx, env, positional[0], *name, policy.ApplyOptions{Force: *force, SkipConflicts: *skipConflicts})
-	default:
-		fmt.Fprintf(stderr, "error: unknown command %q\n\n%s", cmd, usage)
-		return 2
+		err = runApply(ctx, env, bundleOrName, *name, policy.ApplyOptions{Force: *force, SkipConflicts: *skipConflicts})
 	}
 
 	if err != nil {

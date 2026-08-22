@@ -100,6 +100,7 @@ func writePolicy(
 			return err
 		}
 		if !ok {
+			fmt.Fprintf(env.Out, "declined: nothing was changed; the backup at %s is no longer needed and can be deleted\n", backup)
 			return ErrDeclined
 		}
 	}
