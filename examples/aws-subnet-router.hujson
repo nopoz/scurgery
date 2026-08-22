@@ -1,0 +1,34 @@
+{
+	"grants": [
+		{
+			// Reach anything inside the VPC, including the private subnet that
+			// has no route of its own to the internet gateway.
+			"src": ["autogroup:member"],
+			"dst": ["10.100.0.0/16"],
+			"ip":  ["*"],
+		},
+		{
+			// Reach the two AWS nodes by their own tailnet addresses.
+			"src": ["autogroup:member"],
+			"dst": ["tag:aws-subnet-router", "tag:aws-app"],
+			"ip":  ["*"],
+		},
+	],
+	"ssh": [
+		{
+			// Tagged devices have no user owner, so autogroup:self does not
+			// cover them.
+			"action": "accept",
+			"src":    ["autogroup:member"],
+			"dst":    ["tag:aws-subnet-router", "tag:aws-app"],
+			"users":  ["autogroup:nonroot", "root"],
+		},
+	],
+	// Approves the VPC route at device registration time, so no human has to
+	// click approve.
+	"autoApprovers": {"routes": {"10.100.0.0/16": ["tag:aws-subnet-router"]}},
+	"tagOwners": {
+		"tag:aws-subnet-router": ["autogroup:admin", "tag:aws-subnet-router"],
+		"tag:aws-app":           ["autogroup:admin", "tag:aws-app"],
+	},
+}
