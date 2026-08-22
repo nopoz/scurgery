@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tailscale/hujson"
@@ -47,6 +48,13 @@ func TestTrailingCommaSurvivesTailMutation(t *testing.T) {
 	arr.Elements = append(arr.Elements, mustParse(t, "3"))
 	setTrailingComma(v, had)
 
+	if arr.Elements[1].AfterExtra != nil {
+		t.Error("sentinel should have moved off the old last element")
+	}
+	if arr.Elements[2].AfterExtra == nil {
+		t.Error("sentinel should be on the new last element")
+	}
+
 	arr.Elements = arr.Elements[:len(arr.Elements)-1]
 	setTrailingComma(v, had)
 
@@ -68,5 +76,17 @@ func TestSetTrailingCommaOnEmptyContainerIsSafe(t *testing.T) {
 	setTrailingComma(v, true) // must not panic
 	if got, want := string(v.Pack()), "[]"; got != want {
 		t.Errorf("Pack() = %q, want %q", got, want)
+	}
+}
+
+func TestSetTrailingCommaKeepsCommentWhenClearing(t *testing.T) {
+	v := mustParse(t, "[1, 2 /* keep */,]")
+	setTrailingComma(v, false)
+	got := string(v.Pack())
+	if !strings.Contains(got, "/* keep */") {
+		t.Errorf("clearing the trailing comma dropped a comment: %q", got)
+	}
+	if strings.Contains(got, ",]") {
+		t.Errorf("trailing comma was not cleared: %q", got)
 	}
 }
