@@ -40,6 +40,86 @@ func otherNamespaceMarker(extra hujson.Extra, ns string) bool {
 	return false
 }
 
+// otherNamespaceMarkers returns the distinct namespaces, other than ns,
+// marked on any member or element of v.
+func otherNamespaceMarkers(v hujson.Value, ns string) []string {
+	seen := map[string]bool{}
+	collect := func(extra hujson.Extra) {
+		s := string(extra)
+		for i := 0; i < len(s); {
+			j := strings.Index(s[i:], markerPrefix)
+			if j < 0 {
+				return
+			}
+			start := i + j + len(markerPrefix)
+			end := start
+			for end < len(s) && !namespaceEnds(s[end]) {
+				end++
+			}
+			if end > start && s[start:end] != ns {
+				seen[s[start:end]] = true
+			}
+			i = end
+			if i == start {
+				i++ // no progress: step past the prefix so this cannot loop
+			}
+		}
+	}
+	switch t := v.Value.(type) {
+	case *hujson.Object:
+		for _, m := range t.Members {
+			collect(m.Name.BeforeExtra)
+		}
+	case *hujson.Array:
+		for _, el := range t.Elements {
+			collect(el.BeforeExtra)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RemoveBlockers reports which other namespaces are marked inside a
+// container ns created, and so are blocking ns's removal from taking full
+// effect: Remove will not drop a container ns owns while another namespace
+// still has something inside it. It returns nil when nothing blocks ns.
+func RemoveBlockers(policy []byte, ns string) ([]string, error) {
+	if err := ValidateNamespace(ns); err != nil {
+		return nil, err
+	}
+	root, err := hujson.Parse(policy)
+	if err != nil {
+		return nil, fmt.Errorf("parsing policy: %w", err)
+	}
+	rootObj, ok := root.Value.(*hujson.Object)
+	if !ok {
+		return nil, fmt.Errorf("policy is not a JSON object")
+	}
+
+	seen := map[string]bool{}
+	for _, m := range rootObj.Members {
+		if !hasKeyMarker(m.Name.BeforeExtra, ns) {
+			continue
+		}
+		for _, other := range otherNamespaceMarkers(m.Value, ns) {
+			seen[other] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // containerSharedWithOtherNamespace reports whether any member or element of
 // v carries a marker for a namespace other than ns. An owns-key container
 // must not be dropped whole while another namespace still has something
