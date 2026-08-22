@@ -147,6 +147,15 @@ and it completes. This happens because scurgery marks the container's key
 as owned by A, but has no way to also track that B has since added members
 inside it.
 
+**A member two bundles both declare belongs to whichever one installed it
+first.** If bundle A and bundle B both contribute a member with the same
+value, only the first apply marks it; the second apply finds it already
+present and skips it without marking it for itself. `apply` prints a note
+naming the member and the namespace that actually owns it when this
+happens. Removing the owning namespace later removes that member too, even
+though the other bundle also declares it, and removing the other namespace
+never does.
+
 **Structural removal (`--match-structural`) is a recovery path, not an
 equal alternative.** It's for when the marker comments are gone. Instead of
 reading markers, it matches the bundle's members and elements against the

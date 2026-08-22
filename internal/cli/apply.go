@@ -55,6 +55,10 @@ func runApply(ctx context.Context, env *Env, bundlePath, nameOverride string, op
 					"scurgery's local self-check does not run on a forced overwrite, so review the diff above before confirming.\n", len(res.Conflicts))
 			}
 		}
+		for _, s := range res.Shared {
+			fmt.Fprintf(env.Out, "note: %s already exists, contributed by namespace %q; %q was not marked as owning it, "+
+				"so removing %q will remove it even though this bundle also declares it\n", s.Path, s.Owner, b.Name, s.Owner)
+		}
 		fmt.Fprintf(env.Out, "adding %d, updating %d, skipping %d already present\n", res.Added, res.Updated, res.Skipped)
 		return res.Policy, nil
 	}, verify)

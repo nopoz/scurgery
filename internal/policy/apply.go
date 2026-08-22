@@ -21,6 +21,15 @@ type ApplyOptions struct {
 	SkipConflicts bool
 }
 
+// SharedMember names a member or element the bundle declares that was
+// skipped because it already exists, semantically equal, under another
+// namespace's marker: the applying namespace never marks it, so it survives
+// only for as long as the owning namespace's contribution does.
+type SharedMember struct {
+	Path  string
+	Owner string
+}
+
 // ApplyResult carries the merged policy, or a nil Policy when conflicts
 // blocked the operation. When Policy is nil, Added, Updated and Skipped are
 // meaningless: they reflect a merge that was not applied.
@@ -33,6 +42,10 @@ type ApplyResult struct {
 	Updated   int
 	Skipped   int
 	Conflicts []Conflict
+	// Shared lists members or elements skipped as already-present that are
+	// actually owned by a different namespace, not by ns and not by the
+	// operator. See SharedMember.
+	Shared []SharedMember
 }
 
 func memberName(m hujson.ObjectMember) string {
@@ -111,6 +124,12 @@ func Apply(policy, bundle []byte, ns string, opts ApplyOptions) (*ApplyResult, e
 				if existing := findMember(tv, name); existing != nil {
 					if semanticEqual(existing.Value, m.Value) {
 						res.Skipped++
+						if owner, ok := markerNamespace(existing.Name.BeforeExtra); ok && owner != ns {
+							res.Shared = append(res.Shared, SharedMember{
+								Path:  fmt.Sprintf("%s.%q", key, name),
+								Owner: owner,
+							})
+						}
 						continue
 					}
 					if hasMarker(existing.Name.BeforeExtra, ns) {
@@ -158,14 +177,22 @@ func Apply(policy, bundle []byte, ns string, opts ApplyOptions) (*ApplyResult, e
 			}
 			for _, el := range ba.Elements {
 				dup := false
+				var dupOf hujson.Value
 				for _, existing := range tv.Elements {
 					if semanticEqual(existing, el) {
 						dup = true
+						dupOf = existing
 						break
 					}
 				}
 				if dup {
 					res.Skipped++
+					if owner, ok := markerNamespace(dupOf.BeforeExtra); ok && owner != ns {
+						res.Shared = append(res.Shared, SharedMember{
+							Path:  key,
+							Owner: owner,
+						})
+					}
 					continue
 				}
 				ne := el

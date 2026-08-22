@@ -148,6 +148,38 @@ func TestRunApplyReappliedUpdateOverwritesOwnValueWithoutForce(t *testing.T) {
 	}
 }
 
+// TestRunApplyWarnsWhenMemberIsSharedWithAnotherNamespace reproduces two
+// bundles declaring the same tagOwners member: the second apply must warn at
+// the moment it happens, naming the member and the namespace that actually
+// owns it, since removing that namespace later removes it too.
+func TestRunApplyWarnsWhenMemberIsSharedWithAnotherNamespace(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"tagOwners": {}}`), etag: `"e1"`, validateOK: true}
+	env, out, done := testEnv(t, f, "")
+	defer done()
+
+	alphaPath := writeBundleFile(t, "alpha.hujson", `{"tagOwners": {"tag:shared": ["autogroup:admin"], "tag:alpha": ["autogroup:admin"]}}`)
+	if err := runApply(context.Background(), env, alphaPath, "", policy.ApplyOptions{}); err != nil {
+		t.Fatalf("runApply alpha: %v", err)
+	}
+
+	betaPath := writeBundleFile(t, "beta.hujson", `{"tagOwners": {"tag:shared": ["autogroup:admin"], "tag:beta": ["autogroup:admin"]}}`)
+	if err := runApply(context.Background(), env, betaPath, "", policy.ApplyOptions{}); err != nil {
+		t.Fatalf("runApply beta: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "note:") {
+		t.Fatalf("apply should have printed a note about the shared member, got %q", got)
+	}
+	note := got[strings.Index(got, "note:"):]
+	if !strings.Contains(note, "tag:shared") {
+		t.Errorf("the note should name the shared member, got %q", note)
+	}
+	if !strings.Contains(note, `"alpha"`) {
+		t.Errorf("the note should name the namespace that actually owns it, got %q", note)
+	}
+}
+
 func TestRunApplyBlocksOnConflictWithoutForce(t *testing.T) {
 	f := &fakeTailnet{
 		policy:     []byte(`{"tagOwners": {"tag:subnet-router": ["autogroup:admin"]}}`),

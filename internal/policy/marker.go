@@ -46,6 +46,25 @@ func hasKeyMarker(extra hujson.Extra, ns string) bool {
 	return containsMarker(extra, ns, keyMarkerSuffix)
 }
 
+// markerNamespace returns the namespace named by the first scurgery marker in
+// extra, if any. A member or element Apply produces carries at most one.
+func markerNamespace(extra hujson.Extra) (string, bool) {
+	s := string(extra)
+	j := strings.Index(s, markerPrefix)
+	if j < 0 {
+		return "", false
+	}
+	start := j + len(markerPrefix)
+	end := start
+	for end < len(s) && !namespaceEnds(s[end]) {
+		end++
+	}
+	if end == start {
+		return "", false
+	}
+	return s[start:end], true
+}
+
 // indentOf returns the indentation a container uses for its children, taken
 // from the whitespace preceding an existing child.
 func indentOf(extra hujson.Extra, def string) string {

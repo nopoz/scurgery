@@ -220,6 +220,68 @@ func TestApplyMatchesGoldenOutput(t *testing.T) {
 	}
 }
 
+// Reproduces the scenario where two bundles both declare a member with the
+// same value: alpha installs it first and owns the marker, beta's apply
+// skips it as already present and never marks it. Apply must report that in
+// res.Shared, naming the member and the namespace that actually owns it, so
+// the operator finds out at apply time rather than after later removing
+// alpha and discovering beta's status silently lied about tag:shared.
+func TestApplyReportsObjectMemberSharedWithAnotherNamespace(t *testing.T) {
+	base := `{"tagOwners": {}}`
+	alphaBundle := `{"tagOwners": {"tag:shared": ["autogroup:admin"], "tag:alpha": ["autogroup:admin"]}}`
+	betaBundle := `{"tagOwners": {"tag:shared": ["autogroup:admin"], "tag:beta": ["autogroup:admin"]}}`
+
+	a := applyOK(t, base, alphaBundle, "alpha")
+	if a.Added != 2 {
+		t.Fatalf("alpha Added = %d, want 2", a.Added)
+	}
+
+	b, err := Apply(a.Policy, []byte(betaBundle), "beta", ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply beta: %v", err)
+	}
+	if len(b.Conflicts) != 0 {
+		t.Fatalf("unexpected conflicts: %+v", b.Conflicts)
+	}
+	if b.Added != 1 || b.Skipped != 1 {
+		t.Fatalf("beta Added=%d Skipped=%d, want 1 and 1", b.Added, b.Skipped)
+	}
+	if len(b.Shared) != 1 {
+		t.Fatalf("Shared = %+v, want exactly one entry", b.Shared)
+	}
+	if b.Shared[0].Owner != "alpha" {
+		t.Errorf("Shared[0].Owner = %q, want %q", b.Shared[0].Owner, "alpha")
+	}
+	if !strings.Contains(b.Shared[0].Path, "tag:shared") {
+		t.Errorf("Shared[0].Path = %q, want it to name tag:shared", b.Shared[0].Path)
+	}
+}
+
+// Same trap, but for an array element rather than an object member: two
+// bundles append a semantically identical element, and the second apply
+// skips it as a duplicate without marking it for its own namespace.
+func TestApplyReportsArrayElementSharedWithAnotherNamespace(t *testing.T) {
+	base := `{"acls": []}`
+	alphaBundle := `{"acls": ["shared-rule", "alpha-rule"]}`
+	betaBundle := `{"acls": ["shared-rule", "beta-rule"]}`
+
+	a := applyOK(t, base, alphaBundle, "alpha")
+	if a.Added != 2 {
+		t.Fatalf("alpha Added = %d, want 2", a.Added)
+	}
+
+	b, err := Apply(a.Policy, []byte(betaBundle), "beta", ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply beta: %v", err)
+	}
+	if b.Added != 1 || b.Skipped != 1 {
+		t.Fatalf("beta Added=%d Skipped=%d, want 1 and 1", b.Added, b.Skipped)
+	}
+	if len(b.Shared) != 1 || b.Shared[0].Owner != "alpha" || b.Shared[0].Path != "acls" {
+		t.Fatalf("Shared = %+v, want one entry {acls, alpha}", b.Shared)
+	}
+}
+
 // Re-applying a bundle for a namespace already installed, with a changed
 // member value, must overwrite in place rather than report a conflict: the
 // value "currently in your policy" is scurgery's own, under its own marker,
