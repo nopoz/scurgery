@@ -22,7 +22,8 @@ type ApplyOptions struct {
 }
 
 // ApplyResult carries the merged policy, or a nil Policy when conflicts
-// blocked the operation.
+// blocked the operation. When Policy is nil, Added and Skipped are
+// meaningless: they reflect a merge that was not applied.
 type ApplyResult struct {
 	Policy    []byte
 	Added     int

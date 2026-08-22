@@ -175,3 +175,77 @@ func TestApplyRejectsUnparseableInput(t *testing.T) {
 		t.Error("Apply should reject an unparseable bundle")
 	}
 }
+
+// bundleGolden exercises all three appending paths in one Apply call: two
+// members appended into an existing object (tagOwners), two elements
+// appended into an existing array (grants), and a brand new top-level key
+// (nodeAttrs). Each of the merged containers already carries a trailing
+// comma, or becomes the new last root member, so comparing full bytes
+// against a golden file is the only way to catch a broken trailing-comma
+// restore: string-matching tests can't see a comma.
+//
+// The first appended member of tagOwners and the first appended element of
+// grants each carry a bundle-only comment before their separating comma.
+// hujson attaches that comment to the *first* element's AfterExtra rather
+// than the container's, precisely because a second element follows it, so
+// it is also the only way to catch a dropped `AfterExtra = nil`: without
+// that reset, the bundle's own formatting leaks into the merged policy.
+const bundleGolden = `{
+	"tagOwners": {
+		"tag:aws-app": ["autogroup:admin", "tag:aws-app"] /* bundle-only comment */,
+		"tag:aws-app-2": ["autogroup:admin"],
+	},
+	"grants": [
+		{"src": ["tag:aws-app"], "dst": ["tag:aws-subnet-router"], "ip": ["443"]} /* bundle-only comment */,
+		{"src": ["tag:aws-app"], "dst": ["tag:aws-subnet-router"], "ip": ["444"]},
+	],
+	"nodeAttrs": [
+		{"target": ["tag:aws-app"], "attr": ["funnel"]},
+	],
+}`
+
+func TestApplyMatchesGoldenOutput(t *testing.T) {
+	res := applyOK(t, string(loadFixture(t, "realistic.hujson")), bundleGolden, "aws-router")
+	want := string(loadFixture(t, "realistic-applied.golden.hujson"))
+	got := string(res.Policy)
+	if got != want {
+		t.Errorf("Policy does not match golden output\n--- want ---\n%s\n--- got ---\n%s", want, got)
+	}
+	if res.Added != 5 {
+		t.Errorf("Added = %d, want 5", res.Added)
+	}
+}
+
+// TestApplyOnTopLevelScalar exercises the default (non-container) branch,
+// which realistic.hujson never triggers since it has no top-level scalar.
+// randomizeClientPort and disableIPv4 are real top-level scalar policy
+// fields, so this path is reachable in production.
+func TestApplyOnTopLevelScalar(t *testing.T) {
+	const scalarPolicy = `{"randomizeClientPort": true}`
+	const scalarBundle = `{"randomizeClientPort": false}`
+
+	res, err := Apply([]byte(scalarPolicy), []byte(scalarBundle), "aws-router", ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(res.Conflicts) != 1 {
+		t.Fatalf("Conflicts = %d, want 1", len(res.Conflicts))
+	}
+	if res.Conflicts[0].Path != "randomizeClientPort" {
+		t.Errorf("Conflict.Path = %q, want %q", res.Conflicts[0].Path, "randomizeClientPort")
+	}
+	if res.Policy != nil {
+		t.Error("a blocked apply must return no policy")
+	}
+
+	forced, err := Apply([]byte(scalarPolicy), []byte(scalarBundle), "aws-router", ApplyOptions{Force: true})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if forced.Policy == nil {
+		t.Fatal("force should produce a policy")
+	}
+	if !strings.Contains(string(forced.Policy), "false") {
+		t.Error("force should have overwritten the value")
+	}
+}

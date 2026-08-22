@@ -1,0 +1,43 @@
+{
+	"grants": [
+		{
+			"src": ["*"],
+			"dst": ["*"],
+			"ip":  ["*"],
+		},
+		{
+			// Reach anything inside the VPC.
+			"src": ["autogroup:member"],
+			"dst": ["10.100.0.0/16"],
+			"ip":  ["*"],
+		},
+		// scurgery:aws-router
+		{"src": ["tag:aws-app"], "dst": ["tag:aws-subnet-router"], "ip": ["443"]},
+		// scurgery:aws-router
+		{"src": ["tag:aws-app"], "dst": ["tag:aws-subnet-router"], "ip": ["444"]},
+	],
+	"ssh": [
+		{
+			"action": "check",
+			"src":    ["autogroup:member"],
+			"dst":    ["autogroup:self"],
+			"users":  ["autogroup:nonroot", "root"],
+		},
+	],
+
+	// Approves the VPC route at device registration time.
+	"autoApprovers": {"routes": {"10.100.0.0/16": ["tag:aws-subnet-router"]}},
+	// The self-references are load bearing.
+	"tagOwners": {
+		"tag:subnet-router":     ["autogroup:admin"],
+		"tag:aws-subnet-router": ["autogroup:admin", "tag:aws-subnet-router"],
+		// scurgery:aws-router
+		"tag:aws-app": ["autogroup:admin", "tag:aws-app"],
+		// scurgery:aws-router
+		"tag:aws-app-2": ["autogroup:admin"],
+	},
+	// scurgery:aws-router owns-key
+	"nodeAttrs": [
+		{"target": ["tag:aws-app"], "attr": ["funnel"]},
+	],
+}
