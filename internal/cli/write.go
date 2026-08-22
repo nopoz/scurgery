@@ -32,16 +32,18 @@ var ErrDeclined = errors.New("declined")
 // writePolicy runs the safety ladder for every mutation:
 //
 //  1. read the policy and its ETag
-//  2. compute the new policy
-//  3. self-check: assert scurgery changed only what it owns
-//  4. ask the server to validate it, requiring an empty body
-//  5. show a diff (a dry run stops here)
-//  6. back up the pre-change policy locally
-//  7. confirm
-//  8. write conditionally on the ETag
+//  2. refuse to proceed if the server returned no ETag, since the write
+//     could not be conditioned safely
+//  3. compute the new policy
+//  4. self-check: assert scurgery changed only what it owns
+//  5. ask the server to validate it, requiring an empty body
+//  6. show a diff (a dry run stops here)
+//  7. back up the pre-change policy locally
+//  8. confirm
+//  9. write conditionally on the ETag
 //
-// Steps 3 and 4 are independent checks on the same claim: 3 catches "scurgery
-// mangled something", 4 catches "Tailscale will not accept this".
+// Steps 4 and 5 are independent checks on the same claim: 4 catches "scurgery
+// mangled something", 5 catches "Tailscale will not accept this".
 //
 // mutate returns nil to mean there is nothing to do.
 func writePolicy(

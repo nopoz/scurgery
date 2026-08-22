@@ -8,6 +8,11 @@ import (
 	"github.com/nopoz/scurgery/internal/policy"
 )
 
+// applyVerify is policy.VerifyApply behind a package variable so tests can
+// wrap it to observe whether the self-check actually ran, rather than
+// inferring that from output or side effects.
+var applyVerify = policy.VerifyApply
+
 func runApply(ctx context.Context, env *Env, bundlePath, nameOverride string, opts policy.ApplyOptions) error {
 	b, err := bundle.Load(bundlePath, nameOverride)
 	if err != nil {
@@ -19,14 +24,15 @@ func runApply(ctx context.Context, env *Env, bundlePath, nameOverride string, op
 	// apart from collateral damage: both look like "content changed that
 	// scurgery does not own". When force actually overwrites something,
 	// skip the self-check for this apply rather than have it reject an
-	// overwrite the operator asked for.
+	// overwrite the operator asked for. --skip-conflicts alone overwrites
+	// nothing, so it must always keep the full self-check.
 	var forcedOverwrite bool
 
 	verify := func(before, after []byte) error {
 		if forcedOverwrite {
 			return nil
 		}
-		return policy.VerifyApply(before, after, b.Name)
+		return applyVerify(before, after, b.Name)
 	}
 
 	return writePolicy(ctx, env, "apply "+b.Name, func(current []byte) ([]byte, error) {
