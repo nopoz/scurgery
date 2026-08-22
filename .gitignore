@@ -1,0 +1,17 @@
+# Local tool and editor state. Generic so new tools are covered
+# without this file needing to learn their names.
+/.*/
+!/.github/
+
+# Secrets and local configuration
+.env
+*.local
+
+# Build output
+/scurgery
+/dist/
+*.exe
+
+# Go test and coverage artifacts
+*.test
+*.out
