@@ -1,0 +1,8 @@
+{
+	"grants": [
+		{"src": ["*"], "dst": ["*"], "ip": ["*"]} /* catch-all */,
+	],
+	"tagOwners": {
+		"tag:a": ["autogroup:admin"],
+	},
+}

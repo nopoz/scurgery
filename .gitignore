@@ -15,3 +15,7 @@
 # Go test and coverage artifacts
 *.test
 *.out
+
+# scurgery writes the full tailnet policy here before every change; never
+# commit a live policy into a repo.
+policy-backup-*.hujson

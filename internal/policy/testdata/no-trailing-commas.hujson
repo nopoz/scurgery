@@ -1,0 +1,12 @@
+{
+	"grants": [
+		{
+			"src": ["*"],
+			"dst": ["*"],
+			"ip": ["*"]
+		}
+	],
+	"tagOwners": {
+		"tag:a": ["autogroup:admin"]
+	}
+}
