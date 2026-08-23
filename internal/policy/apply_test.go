@@ -328,6 +328,100 @@ func TestApplyReappliedUpdatedBundleOverwritesOwnValueNoConflict(t *testing.T) {
 	}
 }
 
+// TestApplyReappliedRevisedBundleInsideCreatedContainerFullCycle reproduces
+// the gap in the FIX 1 overwrite-in-place logic: when scurgery creates a
+// top-level key wholesale, only the KEY carries a marker, not the members
+// inside it. Re-applying a revised bundle that changes a value nested inside
+// such a container must still be treated as scurgery's own, not a conflict
+// with unmarked content, and the whole apply/apply-revised/remove cycle must
+// restore the original bytes exactly.
+func TestApplyReappliedRevisedBundleInsideCreatedContainerFullCycle(t *testing.T) {
+	const orig = `{}`
+	const first = `{"autoApprovers": {"routes": {"10.100.0.0/16": ["tag:aws"]}}}`
+	const revised = `{"autoApprovers": {"routes": {"10.200.0.0/16": ["tag:aws"]}}}`
+	const ns = "aws-router"
+
+	once := applyOK(t, orig, first, ns)
+	if !strings.Contains(string(once.Policy), "// scurgery:aws-router owns-key") {
+		t.Fatal("first apply should have created autoApprovers with an owns-key marker")
+	}
+
+	twice, err := Apply(once.Policy, []byte(revised), ns, ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(twice.Conflicts) != 0 {
+		t.Fatalf("re-applying a revised value inside a scurgery-created container must not conflict, got %+v", twice.Conflicts)
+	}
+	if twice.Policy == nil {
+		t.Fatal("a re-apply with no conflicts must produce a policy")
+	}
+	if twice.Updated != 1 {
+		t.Errorf("Updated = %d, want 1", twice.Updated)
+	}
+	if !strings.Contains(string(twice.Policy), "10.200.0.0/16") {
+		t.Error("the revised value should be in the result")
+	}
+
+	if err := VerifyApply(once.Policy, twice.Policy, ns); err != nil {
+		t.Errorf("VerifyApply must accept an in-place update inside a scurgery-created container, got %v", err)
+	}
+
+	removed, err := Remove(twice.Policy, ns)
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(removed.Policy) != orig {
+		t.Errorf("remove after a re-applied update did not restore the original\n--- want ---\n%s\n--- got ---\n%s", orig, removed.Policy)
+	}
+}
+
+// TestApplyMemberOwnedByAnotherNamespaceInsideCreatedContainerStillConflicts
+// makes sure the FIX-1-gap fix does not overreach: a member inside a
+// container scurgery created for ns still belongs to whichever OTHER
+// namespace's marker it individually carries, so an update from ns must
+// still conflict rather than silently overwrite it.
+func TestApplyMemberOwnedByAnotherNamespaceInsideCreatedContainerStillConflicts(t *testing.T) {
+	const base = `{}`
+
+	a := applyOK(t, base, `{"extra": {"x": "1"}}`, "alpha")
+	b := applyOK(t, string(a.Policy), `{"extra": {"y": "1"}}`, "beta")
+	if b.Added != 1 {
+		t.Fatalf("beta Added = %d, want 1", b.Added)
+	}
+
+	c, err := Apply(b.Policy, []byte(`{"extra": {"y": "2"}}`), "alpha", ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(c.Conflicts) != 1 {
+		t.Fatalf("Conflicts = %d, want 1: y belongs to beta, not alpha", len(c.Conflicts))
+	}
+	if c.Policy != nil {
+		t.Error("a blocked apply must return no policy")
+	}
+}
+
+// TestApplyUnmarkedContentInOperatorOwnedContainerStillConflicts pins that
+// the FIX-1-gap fix only kicks in when the enclosing top-level key carries
+// ns's own owns-key marker: ordinary unmarked, operator-authored content
+// must keep conflicting exactly as before.
+func TestApplyUnmarkedContentInOperatorOwnedContainerStillConflicts(t *testing.T) {
+	const policyJSON = `{"autoApprovers": {"routes": {"10.100.0.0/16": ["tag:aws"]}}}`
+	const bundle = `{"autoApprovers": {"routes": {"10.200.0.0/16": ["tag:aws"]}}}`
+
+	res, err := Apply([]byte(policyJSON), []byte(bundle), "aws-router", ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(res.Conflicts) != 1 {
+		t.Fatalf("Conflicts = %d, want 1", len(res.Conflicts))
+	}
+	if res.Policy != nil {
+		t.Error("a blocked apply must return no policy")
+	}
+}
+
 // TestApplyOnTopLevelScalar exercises the default (non-container) branch,
 // which realistic.hujson never triggers since it has no top-level scalar.
 // randomizeClientPort and disableIPv4 are real top-level scalar policy

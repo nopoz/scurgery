@@ -132,12 +132,25 @@ func Apply(policy, bundle []byte, ns string, opts ApplyOptions) (*ApplyResult, e
 						}
 						continue
 					}
-					if hasMarker(existing.Name.BeforeExtra, ns) {
+					owned := hasMarker(existing.Name.BeforeExtra, ns)
+					if !owned && hasKeyMarker(target.Name.BeforeExtra, ns) {
+						// The enclosing top-level key was created wholesale
+						// by a previous apply of ns, so its members carry no
+						// marker of their own (only the key does). Such a
+						// member is still ns's own unless it carries some
+						// OTHER namespace's marker, which can only happen if
+						// a later apply of a different namespace added it
+						// into the same container.
+						if owner, ok := markerNamespace(existing.Name.BeforeExtra); !ok || owner == ns {
+							owned = true
+						}
+					}
+					if owned {
 						// This member is scurgery's own from a previous
 						// apply of the same namespace: an updated bundle
-						// value overwrites it in place. The marker already
-						// names ns, so this is not a conflict with content
-						// scurgery does not own, and it stays reversible.
+						// value overwrites it in place. It is not a
+						// conflict with content scurgery does not own, and
+						// it stays reversible.
 						nv := m.Value
 						nv.BeforeExtra = existing.Value.BeforeExtra
 						nv.AfterExtra = existing.Value.AfterExtra

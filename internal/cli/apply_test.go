@@ -148,6 +148,48 @@ func TestRunApplyReappliedUpdateOverwritesOwnValueWithoutForce(t *testing.T) {
 	}
 }
 
+// TestRunApplyRevisedBundleInsideCreatedContainerNoConflictOrForce
+// reproduces the FIX-1-gap scenario end to end through the CLI: scurgery
+// creates autoApprovers wholesale on the first apply (only the key gets a
+// marker), then a revised bundle changes the nested route value. That must
+// not be reported as a conflict, must need no --force, and the self-check
+// must still run, since only scurgery's own contribution changed.
+func TestRunApplyRevisedBundleInsideCreatedContainerNoConflictOrForce(t *testing.T) {
+	calls := 0
+	orig := applyVerify
+	applyVerify = func(before, after []byte, ns string) error {
+		calls++
+		return orig(before, after, ns)
+	}
+	defer func() { applyVerify = orig }()
+
+	f := &fakeTailnet{policy: []byte(`{}`), etag: `"e1"`, validateOK: true}
+	env, out, done := testEnv(t, f, "")
+	defer done()
+
+	path := writeBundleFile(t, "test.hujson", `{"autoApprovers": {"routes": {"10.100.0.0/16": ["tag:aws"]}}}`)
+	if err := runApply(context.Background(), env, path, "", policy.ApplyOptions{}); err != nil {
+		t.Fatalf("runApply (first): %v", err)
+	}
+
+	revisedPath := writeBundleFile(t, "test.hujson", `{"autoApprovers": {"routes": {"10.200.0.0/16": ["tag:aws"]}}}`)
+	if err := runApply(context.Background(), env, revisedPath, "", policy.ApplyOptions{}); err != nil {
+		t.Fatalf("runApply (revised, no --force): %v", err)
+	}
+	if f.writes != 2 {
+		t.Errorf("writes = %d, want 2", f.writes)
+	}
+	if !strings.Contains(string(f.policy), "10.200.0.0/16") {
+		t.Errorf("policy should hold the revised value, got %q", f.policy)
+	}
+	if strings.Contains(out.String(), "conflict at") {
+		t.Errorf("re-applying a revised value inside a scurgery-created container must not be reported as a conflict, got %q", out.String())
+	}
+	if calls == 0 {
+		t.Error("the self-check must run for a re-applied update, since it did not need --force")
+	}
+}
+
 // TestRunApplyWarnsWhenMemberIsSharedWithAnotherNamespace reproduces two
 // bundles declaring the same tagOwners member: the second apply must warn at
 // the moment it happens, naming the member and the namespace that actually
