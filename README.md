@@ -111,6 +111,15 @@ A backup of the policy is written to the working directory, or to
 operator is then asked to confirm and says no. The backup is there whether
 or not the write happens.
 
+A backup file holds the complete tailnet policy: every hostname, subnet,
+tag, and group membership in it, not just what scurgery is about to touch.
+The default `--backup-dir` is the working directory, so running scurgery
+inside a project repository leaves that file sitting there to be
+accidentally committed. `policy-backup-*.hujson` is in this repository's
+own `.gitignore`; if you run scurgery from inside a repository of your own,
+add the same pattern to yours, or point `--backup-dir` somewhere outside
+version control.
+
 ## Writing a bundle
 
 A bundle is a partial policy file: the same shape as a real policy, holding
