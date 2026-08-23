@@ -1,0 +1,5 @@
+# This tool's contract is that it reproduces a policy file's exact bytes, and
+# the fixtures it is tested against are compared the same way. A checkout that
+# rewrote line endings would hand the tests different bytes than the ones
+# committed, so nothing here is line-ending converted.
+* -text
