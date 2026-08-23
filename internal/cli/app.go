@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -20,14 +21,29 @@ exactly those blocks again, leaving the rest of the file untouched.
   scurgery remove <name>           [--dry-run] [--yes]
   scurgery remove <bundle.hujson>  [--name N] [--dry-run] [--yes]
                                    [--match-structural]
-  scurgery status                  list installed bundles
+  scurgery status                  list installed bundles [--json]
   scurgery diff   <bundle.hujson>  show what apply would change, write nothing
-                                   (exit 1 if it would change anything, 0 otherwise)
+                                   [--json]
+
+Exit codes:
+  0  success; for diff, nothing would change
+  1  diff only: applying the bundle would change the policy
+  2  usage error
+  3  runtime error: credentials, network, or a refused write
 
 Credentials come from the environment:
   TS_API_KEY   a Tailscale API access token
   TS_TAILNET   the tailnet name, as shown in the admin console
 `
+
+// Exit codes are a contract automation depends on: a caller must be able to
+// tell "the policy would change" apart from "scurgery could not tell you".
+const (
+	exitOK      = 0 // success, and for diff, nothing would change
+	exitChanged = 1 // diff only: applying this bundle would change the policy
+	exitUsage   = 2 // the command line was wrong
+	exitError   = 3 // everything else that failed: credentials, network, refusal
+)
 
 // newClient is api.New behind a package variable so tests can point Run at a
 // fake server. Unlike an environment variable it is not settable at runtime,
@@ -38,7 +54,7 @@ var newClient = api.New
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
-		return 2
+		return exitUsage
 	}
 
 	cmd, rest := args[0], args[1:]
@@ -52,7 +68,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "apply", "remove", "status", "diff":
 	default:
 		fmt.Fprintf(stderr, "error: unknown command %q\n\n%s", cmd, usage)
-		return 2
+		return exitUsage
 	}
 
 	fs := flag.NewFlagSet("scurgery "+cmd, flag.ContinueOnError)
@@ -66,14 +82,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		matchStructural = fs.Bool("match-structural", false, "remove by content when markers are absent")
 		tailnet         = fs.String("tailnet", os.Getenv("TS_TAILNET"), "tailnet name")
 		backupDir       = fs.String("backup-dir", ".", "directory for pre-change policy backups")
+		jsonOut         = fs.Bool("json", false, "machine-readable output (status and diff only)")
 	)
 	flagArgs, positional := splitArgs(rest)
 	if err := fs.Parse(flagArgs); err != nil {
-		return 2
+		return exitUsage
 	}
 	if len(positional) > 1 {
 		fmt.Fprintf(stderr, "error: too many arguments: %s\n", strings.Join(positional, ", "))
-		return 2
+		return exitUsage
 	}
 
 	var bundleOrName string
@@ -81,25 +98,30 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "apply", "diff":
 		if len(positional) < 1 {
 			fmt.Fprintf(stderr, "error: %s needs a bundle file\n", cmd)
-			return 2
+			return exitUsage
 		}
 		bundleOrName = positional[0]
 	case "remove":
 		if len(positional) < 1 {
 			fmt.Fprintln(stderr, "error: remove needs a bundle name or file")
-			return 2
+			return exitUsage
 		}
 		bundleOrName = positional[0]
+	}
+
+	if *jsonOut && cmd != "status" && cmd != "diff" {
+		fmt.Fprintf(stderr, "error: --json is supported by status and diff only, not %s\n", cmd)
+		return exitUsage
 	}
 
 	token := os.Getenv("TS_API_KEY")
 	if token == "" {
 		fmt.Fprintln(stderr, "error: TS_API_KEY is not set. Create an API access token under Settings, Keys in the admin console")
-		return 1
+		return exitError
 	}
 	if *tailnet == "" {
 		fmt.Fprintln(stderr, "error: no tailnet. Set TS_TAILNET or pass --tailnet")
-		return 1
+		return exitError
 	}
 
 	env := &Env{
@@ -109,6 +131,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		BackupDir: *backupDir,
 		AssumeYes: *yes,
 		DryRun:    *dryRun,
+		JSON:      *jsonOut,
 	}
 
 	var err error
@@ -122,17 +145,49 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	case "diff":
 		env.DryRun = true
 		env.AssumeYes = true
+		if env.JSON {
+			// Prose moves to stderr rather than being dropped: conflict
+			// detail is the most useful thing diff prints.
+			env.Out = stderr
+		}
 		err = runApply(ctx, env, bundleOrName, *name, policy.ApplyOptions{Force: *force, SkipConflicts: *skipConflicts})
 	}
 
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
-		return 1
+		return exitError
+	}
+	if cmd == "diff" && env.JSON {
+		if err := writeJSON(stdout, diffReport{Bundle: env.Bundle, Changed: env.Changed, Diff: env.Diff}); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitError
+		}
 	}
 	if cmd == "diff" && env.Changed {
-		return 1
+		return exitChanged
 	}
-	return 0
+	return exitOK
+}
+
+// diffReport and statusReport are the machine-readable contract, so their
+// field names change only deliberately.
+type diffReport struct {
+	Bundle  string `json:"bundle"`
+	Changed bool   `json:"changed"`
+	Diff    string `json:"diff"`
+}
+
+type statusReport struct {
+	Installed []string `json:"installed"`
+}
+
+func writeJSON(w io.Writer, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "%s\n", b)
+	return err
 }
 
 // splitArgs separates flags from positional arguments. Go's flag package stops
@@ -146,6 +201,7 @@ func splitArgs(args []string) (flags, positional []string) {
 		"force":            true,
 		"skip-conflicts":   true,
 		"match-structural": true,
+		"json":             true,
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -178,6 +234,9 @@ func runStatus(ctx context.Context, env *Env) error {
 	names, err := policy.Namespaces(current)
 	if err != nil {
 		return err
+	}
+	if env.JSON {
+		return writeJSON(env.Out, statusReport{Installed: names})
 	}
 	if len(names) == 0 {
 		fmt.Fprintln(env.Out, "nothing installed by scurgery")

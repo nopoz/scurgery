@@ -18,6 +18,7 @@ func runApply(ctx context.Context, env *Env, bundlePath, nameOverride string, op
 	if err != nil {
 		return err
 	}
+	env.Bundle = b.Name
 
 	// A --force overwrite replaces an operator's value in place without a
 	// scurgery marker (see policy.Apply), so the self-check cannot tell that

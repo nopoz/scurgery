@@ -28,6 +28,11 @@ type Env struct {
 	// whether a write actually happened. diff uses it to decide its exit
 	// code, per the design's "exit 1 if it would change anything".
 	Changed bool
+	// Diff and Bundle are reported back for --json, since the rendered
+	// diff is otherwise only ever printed.
+	JSON   bool
+	Diff   string
+	Bundle string
 }
 
 // ErrDeclined reports that the operator answered no at the confirmation
@@ -87,6 +92,7 @@ func writePolicy(
 	}
 
 	diff := Unified(current, next, 3)
+	env.Diff = diff
 	fmt.Fprintf(env.Out, "%s\n", diff)
 
 	if env.DryRun {

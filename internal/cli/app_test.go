@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -56,8 +57,8 @@ func TestRunRequiresCredentials(t *testing.T) {
 	t.Setenv("TS_TAILNET", "")
 	var out, errb bytes.Buffer
 	code := Run(context.Background(), []string{"status"}, &out, &errb, strings.NewReader(""))
-	if code != 1 {
-		t.Errorf("code = %d, want 1 (credential error)", code)
+	if code != 3 {
+		t.Errorf("code = %d, want 3 (runtime error)", code)
 	}
 	if !strings.Contains(errb.String(), "TS_API_KEY") {
 		t.Errorf("the error should name the missing variable, got %q", errb.String())
@@ -322,5 +323,158 @@ func TestRunApplyRejectsMultiplePositionals(t *testing.T) {
 	}
 	if f.writes != 0 {
 		t.Error("a rejected multi-positional call must not write")
+	}
+}
+
+// A CI gate reading a broken token or an unreadable policy as "drift" is
+// the failure the exit-code contract exists to prevent, so the two tests
+// below matter as much as the happy path.
+func TestRunRuntimeErrorExitsThree(t *testing.T) {
+	f := &fakeTailnet{policy: []byte("not valid hujson {{{"), etag: `"e1"`, validateOK: true}
+	code, _, errb := runEnd2End(t, f, []string{"status"}, "")
+	if code != 3 {
+		t.Errorf("code = %d, want 3 (runtime error), stderr=%q", code, errb.String())
+	}
+}
+
+func TestRunDiffRuntimeErrorIsNotReportedAsDrift(t *testing.T) {
+	f := &fakeTailnet{policy: []byte("not valid hujson {{{"), etag: `"e1"`, validateOK: true}
+	path := writeBundleFile(t, "aws-router.hujson", `{"tagOwners": {"tag:new": ["group:eng"]}}`)
+
+	code, _, errb := runEnd2End(t, f, []string{"diff", path, "--backup-dir", t.TempDir()}, "")
+	if code == 1 {
+		t.Fatal("a failure to read the policy must not exit 1: that is indistinguishable from the policy needing an update")
+	}
+	if code != 3 {
+		t.Errorf("code = %d, want 3 (runtime error), stderr=%q", code, errb.String())
+	}
+}
+
+func TestRunStatusJSON(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(installedPolicy), etag: `"e1"`, validateOK: true}
+	code, out, errb := runEnd2End(t, f, []string{"status", "--json"}, "")
+	if code != 0 {
+		t.Fatalf("code = %d, want 0, stderr=%q", code, errb.String())
+	}
+
+	var got struct {
+		Installed []string `json:"installed"`
+	}
+	// Unmarshalling the whole of stdout pins that nothing human-readable is
+	// mixed in with the document.
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("stdout must be one JSON document and nothing else: %v, got %q", err, out.String())
+	}
+	if len(got.Installed) != 1 || got.Installed[0] != "aws-router" {
+		t.Errorf("installed = %v, want [aws-router]", got.Installed)
+	}
+}
+
+// An empty result must serialise as [] rather than null, so a consumer can
+// iterate it without a nil check.
+func TestRunStatusJSONEmptyListIsNotNull(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"grants": []}`), etag: `"e1"`, validateOK: true}
+	code, out, errb := runEnd2End(t, f, []string{"status", "--json"}, "")
+	if code != 0 {
+		t.Fatalf("code = %d, want 0, stderr=%q", code, errb.String())
+	}
+	if !strings.Contains(strings.ReplaceAll(out.String(), " ", ""), `"installed":[]`) {
+		t.Errorf("an empty result must be [] not null, got %q", out.String())
+	}
+}
+
+func TestRunDiffJSON(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"tagOwners": {}}`), etag: `"e1"`, validateOK: true}
+	path := writeBundleFile(t, "aws-router.hujson", `{"tagOwners": {"tag:new": ["group:eng"]}}`)
+
+	code, out, errb := runEnd2End(t, f, []string{"diff", path, "--json", "--backup-dir", t.TempDir()}, "")
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (would change), stderr=%q", code, errb.String())
+	}
+
+	var got struct {
+		Bundle  string `json:"bundle"`
+		Changed bool   `json:"changed"`
+		Diff    string `json:"diff"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("stdout must be one JSON document and nothing else: %v, got %q", err, out.String())
+	}
+	if !got.Changed {
+		t.Error("changed should be true when the bundle would add something")
+	}
+	if got.Bundle != "aws-router" {
+		t.Errorf("bundle = %q, want the namespace aws-router", got.Bundle)
+	}
+	if !strings.Contains(got.Diff, "tag:new") {
+		t.Errorf("the diff text belongs in the document, got %q", got.Diff)
+	}
+	if f.writes != 0 {
+		t.Errorf("diff must never write, got %d writes", f.writes)
+	}
+}
+
+func TestRunDiffJSONWhenNothingWouldChange(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"tagOwners": {"tag:new": ["group:eng"]}}`), etag: `"e1"`, validateOK: true}
+	path := writeBundleFile(t, "aws-router.hujson", `{"tagOwners": {"tag:new": ["group:eng"]}}`)
+
+	code, out, errb := runEnd2End(t, f, []string{"diff", path, "--json", "--backup-dir", t.TempDir()}, "")
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (no change), stderr=%q", code, errb.String())
+	}
+
+	var got struct {
+		Changed bool   `json:"changed"`
+		Diff    string `json:"diff"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("stdout must be one JSON document and nothing else: %v, got %q", err, out.String())
+	}
+	if got.Changed {
+		t.Error("changed should be false when the bundle is already installed")
+	}
+	if got.Diff != "" {
+		t.Errorf("diff should be empty when nothing would change, got %q", got.Diff)
+	}
+}
+
+// Flags are registered for every subcommand, so accepting --json silently
+// here would let an operator believe apply produced a document.
+func TestRunJSONRejectedOnMutatingCommands(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"tagOwners": {}}`), etag: `"e1"`, validateOK: true}
+	path := writeBundleFile(t, "aws-router.hujson", `{"tagOwners": {"tag:new": ["group:eng"]}}`)
+
+	for _, args := range [][]string{
+		{"apply", path, "--json", "--yes"},
+		{"remove", "aws-router", "--json", "--yes"},
+	} {
+		code, _, errb := runEnd2End(t, f, append(args, "--backup-dir", t.TempDir()), "")
+		if code != 2 {
+			t.Errorf("Run(%v) = %d, want 2 (usage error), stderr=%q", args, code, errb.String())
+		}
+		if !strings.Contains(errb.String(), "--json") {
+			t.Errorf("the message should name the flag, got %q", errb.String())
+		}
+	}
+	if f.writes != 0 {
+		t.Errorf("a rejected flag must leave the policy alone, got %d writes", f.writes)
+	}
+}
+
+// The per-conflict detail lines must reach stderr rather than being
+// discarded with the rest of the prose.
+func TestRunDiffJSONKeepsConflictDetailOnStderr(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"tagOwners": {"tag:new": ["group:ops"]}}`), etag: `"e1"`, validateOK: true}
+	path := writeBundleFile(t, "aws-router.hujson", `{"tagOwners": {"tag:new": ["group:eng"]}}`)
+
+	code, out, errb := runEnd2End(t, f, []string{"diff", path, "--json", "--backup-dir", t.TempDir()}, "")
+	if code != 3 {
+		t.Fatalf("code = %d, want 3 (runtime error: the bundle conflicts), stderr=%q", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "conflict at") {
+		t.Errorf("conflict detail must survive --json, got stderr=%q", errb.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout must stay clean when there is no document to emit, got %q", out.String())
 	}
 }

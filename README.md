@@ -9,20 +9,30 @@ file byte-identical to what it was.
 The Tailscale policy file API is whole-file: you `GET` the whole thing, and
 you `POST` the whole thing back. There is no endpoint for "add this grant"
 or "remove that grant". Every tool that touches the policy from outside the
-admin console has to deal with that somehow, and the existing options all
-deal with it by making you own more than you should have to:
+admin console has to answer that somehow. The published ones answer it by taking
+charge of the whole file, rules other people wrote included. None of them can
+add a few rules now and remove exactly those rules later, leaving the rest of
+the file as it was:
 
 | Tool | Model | Why it does not solve this |
 |---|---|---|
-| `tailscale_acl` (Terraform, Pulumi) | Whole-file resource | Documented to completely overwrite the existing policy file contents. There is no `If-Match` precondition to satisfy, only an `overwrite_existing_content` flag to disable |
-| `gitops-pusher`, `gitops-acl-action` | Git repo is source of truth | Assumes you own the whole policy file |
-| `tailscale-acl-combiner` | Merges parent and child files before upload | Still uploads a whole file. Top-level objects and arrays are appended, not merged. No removal, no awareness of live state |
-| Visual policy editor | Human GUI | Manual, which is the step you're trying to skip |
+| `tailscale_acl` (Terraform, Pulumi) | Whole-file resource | Documented to completely overwrite the existing policy file contents. There is no `If-Match` precondition to satisfy, only an `overwrite_existing_content` flag that waives the import-first guard. Destroying the resource either leaves your rules in place or, with `reset_acl_on_destroy`, resets the whole tailnet policy to the default |
+| `gitops-pusher`, `gitops-acl-action` | Git repo is source of truth | Assumes you own the whole policy file. Undoing a change means reverting the commit and pushing the whole file again, which also reverts whatever anyone else changed in the meantime |
+| `tailscale-acl-combiner` | Merges parent and child files before upload | The result is still a whole file, pushed wholesale by whatever applies it. Top-level objects and arrays are appended, not merged. No removal, no awareness of live state |
+| Visual policy editor | Human GUI | Manual, which is the step you're trying to skip, and removal means remembering which lines were yours |
 
 scurgery is for the case where a project needs to add a handful of grants,
 SSH rules, or tag owners to a tailnet whose policy someone else owns, and
 needs to be able to take those additions back out later without touching
 anything else in the file, including formatting and comments it didn't add.
+
+That case turns up whenever provisioning wants to be one command. A Terraform
+module that builds a tagged subnet router needs tag owners, an approved route
+and a couple of grants in the policy before its nodes register, and today it
+either takes over the operator's whole policy file to put them there or ends
+its setup instructions with a block to paste in by hand. scurgery is the third
+option: apply the bundle before the stack goes up, remove it after the stack
+comes down.
 
 ## Install
 
@@ -144,6 +154,92 @@ access to a private VPC subnet through a subnet router and an app node,
 allows SSH to both, auto-approves the VPC route, and owns the two tags
 involved.
 
+## Automation
+
+`apply` and `remove` take `--yes`, so nothing waits for a human. Exit codes
+are a contract:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. For `diff`, nothing would change |
+| 1 | `diff` only: applying the bundle would change the policy |
+| 2 | Usage error |
+| 3 | Runtime error: credentials, network, or a refused write |
+
+A runtime failure is deliberately not 1. A CI gate that reads an expired
+token as "the policy needs updating" is worse than one that reads nothing at
+all.
+
+`status` and `diff` also take `--json`, which puts one JSON document on
+stdout and nothing else. Everything human-readable goes to stderr instead,
+including the per-conflict detail lines, so nothing is lost by asking for
+JSON. A failure prints its message and emits no document at all.
+
+```
+$ scurgery status --json
+{"installed":["aws-router"]}
+
+$ scurgery diff aws-router.hujson --json
+{"bundle":"aws-router","changed":true,"diff":"  {\n+  \"tagOwners\": {\n..."}
+```
+
+`--json` is rejected on `apply` and `remove` rather than accepted and
+ignored, so nothing can quietly believe it got a machine-readable result.
+
+### Terraform
+
+There is no scurgery provider. The bundle goes up and comes down with the
+stack through a `terraform_data` resource:
+
+```hcl
+resource "terraform_data" "policy" {
+  input = "aws-router"
+
+  provisioner "local-exec" {
+    command = "scurgery apply ${path.module}/policy.hujson --name ${self.input} --yes"
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "scurgery remove ${self.input} --yes"
+  }
+}
+
+resource "aws_instance" "router" {
+  depends_on = [terraform_data.policy]
+  # ...
+}
+```
+
+Three things to know:
+
+- A destroy-time provisioner may only reference `self`, `count` and `each`.
+  That is why the namespace is carried in `input` rather than a variable.
+- `TS_API_KEY` and `TS_TAILNET` come from the environment Terraform itself
+  runs in, or from an `environment` block on the provisioner. Prefer the
+  first: a token in an `environment` block ends up in the plan file.
+- Provisioners run outside the plan, so `terraform plan` will not show the
+  policy change. Use `scurgery diff` for that.
+
+`diff` doubles as a CI check. It prints what would change and sets its exit
+code to say which of the three outcomes happened, so a script can tell "the
+policy needs updating" apart from "the check itself failed":
+
+```sh
+scurgery diff policy.hujson
+result=$?
+
+if [ $result -eq 0 ]; then
+  echo "Policy is up to date."
+elif [ $result -eq 1 ]; then
+  echo "Policy needs updating. Run scurgery apply."
+  exit 1
+else
+  echo "Could not check the policy. Look at the error above."
+  exit 1
+fi
+```
+
 ## Limitations
 
 **Re-applying a bundle overwrites scurgery's own previous value, including
@@ -208,7 +304,9 @@ policy by value and removes what matches. Because of that:
 
 **No OAuth.** Only Tailscale API access tokens are supported.
 
-**No Terraform provider.**
+**No Terraform provider.** scurgery is a CLI. A Terraform configuration
+cannot declare a bundle as a resource; see Automation above for the
+`terraform_data` pattern that applies and removes one with the stack.
 
 **Duplicate identical array elements are matched by value.** Two members of
 an array (say `grants`) that are semantically identical are indistinguishable
