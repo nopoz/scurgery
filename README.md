@@ -61,6 +61,41 @@ pass to `remove` later.
 everything in it is already installed, so it works as a CI check for policy
 drift.
 
+## Credentials
+
+scurgery reads `TS_API_KEY` and `TS_TAILNET` from the environment. Exporting
+them every time defeats the point of a tool meant to be scripted, so it also
+reads them from a config file:
+
+```
+mkdir -p ~/.config/scurgery
+cat > ~/.config/scurgery/config <<'EOF'
+TS_API_KEY=tskey-api-...
+TS_TAILNET=example.com
+EOF
+chmod 600 ~/.config/scurgery/config
+```
+
+The path is `$XDG_CONFIG_HOME/scurgery/config` when that variable is set, and
+`~/.config/scurgery/config` otherwise. Not having the file is fine; it is only
+read if it exists.
+
+The format is `KEY=VALUE` lines. Blank lines and lines starting with `#` are
+ignored, whitespace around the key and value is trimmed, and one matched pair
+of surrounding quotes is stripped. There is no shell expansion and no `export`.
+
+`TS_API_KEY` and `TS_TAILNET` are the only keys the file may set. Any other key
+is an error rather than something quietly ignored, which is what keeps this
+file from becoming a place to redirect where your token gets sent.
+
+Because the file holds an API token, scurgery refuses to read it if anyone but
+the owner can, and tells you to `chmod 600` it.
+
+Precedence runs `--tailnet` first, then the environment, then the file. The
+environment beating the file is deliberate: CI and Terraform supply secrets as
+environment variables, and a config file on a build agent must not displace
+them.
+
 ## How it tracks its own blocks
 
 scurgery has no server-side state to work with, so it tracks what it added
@@ -217,7 +252,8 @@ Three things to know:
   That is why the namespace is carried in `input` rather than a variable.
 - `TS_API_KEY` and `TS_TAILNET` come from the environment Terraform itself
   runs in, or from an `environment` block on the provisioner. Prefer the
-  first: a token in an `environment` block ends up in the plan file.
+  first: a token in an `environment` block ends up in the plan file. The
+  config file works here too, and the environment still wins over it.
 - Provisioners run outside the plan, so `terraform plan` will not show the
   policy change. Use `scurgery diff` for that.
 
