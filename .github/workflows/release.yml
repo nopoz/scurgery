@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Least privilege by default; the single job opts in to what it needs.
+permissions: {}
+
+# Serialize per tag, and never cancel a release mid-publish.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the release and upload its assets
+      id-token: write      # OIDC for build provenance
+      attestations: write  # write the attestation
+    steps:
+      # Kept on audit rather than block: this job runs only on a tag push, so
+      # an allowlist cannot be validated by PR CI the way the block-mode CI
+      # jobs are, and a missing Sigstore or release-upload endpoint would
+      # break a real release partway through. Flip to block once a release
+      # run has baselined its egress set.
+      - name: Harden runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          # No module cache on the release build. The cache is writable by
+          # runs on other refs, which would put a published binary downstream
+          # of something a pull request can influence.
+          cache: false
+
+      # Fail before anything is published rather than after. A tag with no
+      # changelog section is almost always a tag pushed by mistake.
+      - name: Extract the changelog section for this tag
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 == "## [" v "]" || index($0, "## [" v "] ") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no section for ${version}"
+            exit 1
+          fi
+          cat release-notes.md
+
+      # The tests are the gate on the invariant this tool exists to hold, so a
+      # release does not skip them just because CI already ran on main.
+      - name: Run tests
+        run: go test ./...
+
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # CGO_ENABLED=0 so each binary is static and runs on any host of its
+          # platform, without matching the runner's libc.
+          export CGO_ENABLED=0
+          for target in \
+            linux/amd64 linux/arm64 \
+            darwin/amd64 darwin/arm64 \
+            windows/amd64 windows/arm64
+          do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            name="scurgery_${GITHUB_REF_NAME}_${goos}_${goarch}"
+            bin="scurgery"
+            if [ "$goos" = "windows" ]; then
+              bin="scurgery.exe"
+            fi
+            # -X sets the version the `scurgery version` command reports; a
+            # binary built this way is not go-install'd, so nothing else
+            # would tell it what release it belongs to.
+            GOOS="$goos" GOARCH="$goarch" go build \
+              -trimpath \
+              -ldflags "-s -w -X github.com/nopoz/scurgery/internal/cli.version=${GITHUB_REF_NAME}" \
+              -o "dist/${bin}" \
+              ./cmd/scurgery
+
+            # Archived rather than uploaded bare so the executable bit
+            # survives the download on Unix.
+            if [ "$goos" = "windows" ]; then
+              (cd dist && zip -q "${name}.zip" "${bin}" && rm "${bin}")
+            else
+              (cd dist && tar -czf "${name}.tar.gz" "${bin}" && rm "${bin}")
+            fi
+          done
+          # Named explicitly rather than globbed: a bare glob would also
+          # match checksums.txt itself once the file exists.
+          (cd dist && sha256sum scurgery_* > checksums.txt)
+          cat dist/checksums.txt
+
+      # Confirms the version plumbing actually took: a release that reports the
+      # wrong version is worse than one that fails to build.
+      - name: Check the linux/amd64 binary reports the tag
+        run: |
+          set -euo pipefail
+          tar -xzf "dist/scurgery_${GITHUB_REF_NAME}_linux_amd64.tar.gz" -C /tmp scurgery
+          reported=$(/tmp/scurgery version)
+          echo "reported: ${reported}"
+          if [ "${reported}" != "scurgery ${GITHUB_REF_NAME}" ]; then
+            echo "::error::binary reports '${reported}', expected 'scurgery ${GITHUB_REF_NAME}'"
+            exit 1
+          fi
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            dist/*

@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -50,6 +53,11 @@ func TestExitCodesAreDocumentedWherePromised(t *testing.T) {
 // wrong answer rather than a stale sentence. The path is derived from
 // defaultConfigPath rather than written out twice.
 func TestReadmeDocumentsTheConfigFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The documented path is a POSIX one, and defaultConfigPath rightly
+		// does not produce it on Windows, so there is nothing to compare.
+		t.Skip("the config file path this pins is documented for POSIX hosts")
+	}
 	b, err := os.ReadFile("../../README.md")
 	if err != nil {
 		t.Fatalf("reading README.md: %v", err)
@@ -142,5 +150,79 @@ func TestReadmeTableOfContentsMatchesHeadings(t *testing.T) {
 		if !inReadme[title] {
 			t.Errorf("table of contents lists %q, which is not a heading in the README", title)
 		}
+	}
+}
+
+// TestReadmeDocumentsTheVersionCommand derives the documented command from
+// what Run actually answers to, rather than restating the name, so removing
+// or renaming the subcommand fails here instead of leaving the README
+// pointing at a command that no longer exists.
+func TestReadmeDocumentsTheVersionCommand(t *testing.T) {
+	setVersion(t, "v1.2.3")
+
+	var out, errb bytes.Buffer
+	if code := Run(context.Background(), []string{"version"}, &out, &errb, strings.NewReader("")); code != exitOK {
+		t.Fatalf("running version: code = %d, want %d", code, exitOK)
+	}
+	// The output is "scurgery <version>", so the first field is the command's
+	// own name and the invocation the README must document is that name plus
+	// the subcommand.
+	invocation := strings.Fields(out.String())[0] + " version"
+
+	b, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+	if !strings.Contains(string(b), invocation) {
+		t.Errorf("README does not document %q", invocation)
+	}
+	if !strings.Contains(usage, invocation) {
+		t.Errorf("usage text does not document %q", invocation)
+	}
+}
+
+// TestReadmeReleaseArtifactNamesMatchTheWorkflow derives the archive and
+// checksum names from the release workflow that builds them. An operator
+// follows these names to download and verify a binary, and the workflow is
+// the only thing that decides what they are.
+func TestReadmeReleaseArtifactNamesMatchTheWorkflow(t *testing.T) {
+	wf, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("reading release.yml: %v", err)
+	}
+	workflow := string(wf)
+
+	b, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+	readme := string(b)
+
+	// Rebuild an example archive name from the workflow's own template.
+	nameTemplate := regexp.MustCompile(`name="([^"]+)"`).FindStringSubmatch(workflow)
+	if nameTemplate == nil {
+		t.Fatal("release.yml no longer assigns an archive name; the README example cannot be checked")
+	}
+	replacer := strings.NewReplacer(
+		"${GITHUB_REF_NAME}", "v0.1.0",
+		"${goos}", "linux",
+		"${goarch}", "amd64",
+	)
+	example := replacer.Replace(nameTemplate[1]) + ".tar.gz"
+	if strings.Contains(example, "${") {
+		t.Fatalf("archive name template has an unrecognised variable: %q", nameTemplate[1])
+	}
+	if !strings.Contains(readme, example) {
+		t.Errorf("README's download example does not match what the workflow builds (%q)", example)
+	}
+
+	// The checksum file the workflow writes is the one the README tells an
+	// operator to verify against.
+	checksums := regexp.MustCompile(`> (checksums\.\w+)`).FindStringSubmatch(workflow)
+	if checksums == nil {
+		t.Fatal("release.yml no longer writes a checksums file")
+	}
+	if !strings.Contains(readme, "sha256sum -c "+checksums[1]) {
+		t.Errorf("README does not tell the operator to verify against %q", checksums[1])
 	}
 }

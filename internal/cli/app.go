@@ -23,6 +23,7 @@ exactly those blocks again, leaving the rest of the file untouched.
   scurgery status                  list installed bundles [--json]
   scurgery diff   <bundle.hujson>  show what apply would change, write nothing
                                    [--json]
+  scurgery version                 print the version of this build
 
 Exit codes:
   0  success; for diff, nothing would change
@@ -65,6 +66,14 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	if cmd == "help" || cmd == "-h" || cmd == "--help" {
 		fmt.Fprint(stdout, usage)
 		return 0
+	}
+
+	// Answered before the config file is read or credentials are resolved:
+	// reporting the version is what an operator does when a run misbehaves,
+	// so it must not fail on the configuration being diagnosed.
+	if cmd == "version" {
+		fmt.Fprintf(stdout, "scurgery %s\n", resolveVersion())
+		return exitOK
 	}
 
 	switch cmd {
