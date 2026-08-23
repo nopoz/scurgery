@@ -68,6 +68,8 @@ go install github.com/nopoz/scurgery/cmd/scurgery@latest
 
 Requires Go 1.26.
 
+`scurgery version` reports the build you are running.
+
 ## Quick start
 
 ```

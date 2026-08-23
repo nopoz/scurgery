@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"regexp"
@@ -142,5 +144,33 @@ func TestReadmeTableOfContentsMatchesHeadings(t *testing.T) {
 		if !inReadme[title] {
 			t.Errorf("table of contents lists %q, which is not a heading in the README", title)
 		}
+	}
+}
+
+// TestReadmeDocumentsTheVersionCommand derives the documented command from
+// what Run actually answers to, rather than restating the name, so removing
+// or renaming the subcommand fails here instead of leaving the README
+// pointing at a command that no longer exists.
+func TestReadmeDocumentsTheVersionCommand(t *testing.T) {
+	setVersion(t, "v1.2.3")
+
+	var out, errb bytes.Buffer
+	if code := Run(context.Background(), []string{"version"}, &out, &errb, strings.NewReader("")); code != exitOK {
+		t.Fatalf("running version: code = %d, want %d", code, exitOK)
+	}
+	// The output is "scurgery <version>", so the first field is the command's
+	// own name and the invocation the README must document is that name plus
+	// the subcommand.
+	invocation := strings.Fields(out.String())[0] + " version"
+
+	b, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+	if !strings.Contains(string(b), invocation) {
+		t.Errorf("README does not document %q", invocation)
+	}
+	if !strings.Contains(usage, invocation) {
+		t.Errorf("usage text does not document %q", invocation)
 	}
 }
