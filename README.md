@@ -1,5 +1,11 @@
 # scurgery
 
+[![CI](https://github.com/nopoz/scurgery/actions/workflows/ci.yml/badge.svg)](https://github.com/nopoz/scurgery/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/nopoz/scurgery?sort=semver)](https://github.com/nopoz/scurgery/releases/latest)
+[![Go](https://img.shields.io/github/go-mod/go-version/nopoz/scurgery)](go.mod)
+[![Build provenance](https://img.shields.io/badge/build%20provenance-attested-success)](#release-binaries)
+[![License](https://img.shields.io/github/license/nopoz/scurgery)](LICENSE)
+
 scurgery adds a named set of blocks to a Tailscale tailnet policy file and
 later removes exactly those blocks again, leaving everything else in the
 file byte-identical to what it was.
