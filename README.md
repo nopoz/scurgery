@@ -9,20 +9,30 @@ file byte-identical to what it was.
 The Tailscale policy file API is whole-file: you `GET` the whole thing, and
 you `POST` the whole thing back. There is no endpoint for "add this grant"
 or "remove that grant". Every tool that touches the policy from outside the
-admin console has to deal with that somehow, and the existing options all
-deal with it by making you own more than you should have to:
+admin console has to answer that somehow. The published ones answer it by taking
+charge of the whole file, rules other people wrote included. None of them can
+add a few rules now and remove exactly those rules later, leaving the rest of
+the file as it was:
 
 | Tool | Model | Why it does not solve this |
 |---|---|---|
-| `tailscale_acl` (Terraform, Pulumi) | Whole-file resource | Documented to completely overwrite the existing policy file contents. There is no `If-Match` precondition to satisfy, only an `overwrite_existing_content` flag to disable |
-| `gitops-pusher`, `gitops-acl-action` | Git repo is source of truth | Assumes you own the whole policy file |
-| `tailscale-acl-combiner` | Merges parent and child files before upload | Still uploads a whole file. Top-level objects and arrays are appended, not merged. No removal, no awareness of live state |
-| Visual policy editor | Human GUI | Manual, which is the step you're trying to skip |
+| `tailscale_acl` (Terraform, Pulumi) | Whole-file resource | Documented to completely overwrite the existing policy file contents. There is no `If-Match` precondition to satisfy, only an `overwrite_existing_content` flag that waives the import-first guard. Destroying the resource either leaves your rules in place or, with `reset_acl_on_destroy`, resets the whole tailnet policy to the default |
+| `gitops-pusher`, `gitops-acl-action` | Git repo is source of truth | Assumes you own the whole policy file. Undoing a change means reverting the commit and pushing the whole file again, which also reverts whatever anyone else changed in the meantime |
+| `tailscale-acl-combiner` | Merges parent and child files before upload | The result is still a whole file, pushed wholesale by whatever applies it. Top-level objects and arrays are appended, not merged. No removal, no awareness of live state |
+| Visual policy editor | Human GUI | Manual, which is the step you're trying to skip, and removal means remembering which lines were yours |
 
 scurgery is for the case where a project needs to add a handful of grants,
 SSH rules, or tag owners to a tailnet whose policy someone else owns, and
 needs to be able to take those additions back out later without touching
 anything else in the file, including formatting and comments it didn't add.
+
+That case turns up whenever provisioning wants to be one command. A Terraform
+module that builds a tagged subnet router needs tag owners, an approved route
+and a couple of grants in the policy before its nodes register, and today it
+either takes over the operator's whole policy file to put them there or ends
+its setup instructions with a block to paste in by hand. scurgery is the third
+option: apply the bundle before the stack goes up, remove it after the stack
+comes down.
 
 ## Install
 
