@@ -102,9 +102,13 @@ retrying blind. Re-run scurgery to pick up the new state.
 
 A conflict, where a bundle member or value already exists in the policy
 with something different, stops everything by default: nothing is written,
-and both values are printed. `--force` and `--skip-conflicts` are the
-deliberate ways past that; see Limitations below for what `--force` gives
-up.
+and both values are printed. That's the rule when the existing value
+belongs to the operator or to another namespace. When it's scurgery's own
+previous value for the namespace being applied, there's no conflict: it's
+updated in place instead. See Limitations below for what that means for a
+hand-edit made to a scurgery-installed value. `--force` and
+`--skip-conflicts` are the deliberate ways past a real conflict; see
+Limitations below for what `--force` gives up.
 
 `status` reports the namespaces it finds by marker. A policy whose marker
 comments were stripped reports nothing installed, which is accurate: if
@@ -142,6 +146,19 @@ involved.
 
 ## Limitations
 
+**Re-applying a bundle overwrites scurgery's own previous value, including
+a hand-edit.** When a namespace is applied again with a changed value,
+scurgery updates its own previously-installed value in place rather than
+refusing, since that value is already marked as belonging to the namespace
+being applied. If the operator hand-edited a scurgery-installed value in
+between, that edit is overwritten on the next apply, with no conflict
+raised: scurgery can't tell a deliberate hand-edit apart from the value it
+left there itself. The rendered diff and the confirmation prompt still
+stand between that and the tailnet, so read the diff before confirming.
+This only applies to object members: array elements merge by append, so a
+changed array entry is added alongside the old one, and both stay live
+until one of them is removed.
+
 **`--force` is not reversible.** When it overwrites a value already in the
 policy, scurgery does not mark what it replaced, so `remove` cannot bring
 the original back. The backup taken before the write is the only copy of
@@ -163,11 +180,16 @@ inside it.
 **A member two bundles both declare belongs to whichever one installed it
 first.** If bundle A and bundle B both contribute a member with the same
 value, only the first apply marks it; the second apply finds it already
-present and skips it without marking it for itself. `apply` prints a note
-naming the member and the namespace that actually owns it when this
-happens. Removing the owning namespace later removes that member too, even
-though the other bundle also declares it, and removing the other namespace
-never does.
+present and skips it without marking it for itself. When that member
+carries its own marker, `apply` prints a note naming it and the namespace
+that actually owns it. It can't do that when the member lives inside a
+top-level container the first bundle created wholesale: nothing inside such
+a container is individually marked, so there's no owner to name and nothing
+is printed. Removing the owning namespace later removes that member too,
+even though the other bundle also declares it, and removing the other
+namespace never does; in the wholesale-container case, that's the first the
+operator hears of it, visible in the rendered diff before they confirm the
+removal.
 
 **Structural removal (`--match-structural`) is a recovery path, not an
 equal alternative.** It's for when the marker comments are gone. Instead of
