@@ -23,6 +23,11 @@ type Env struct {
 	BackupDir string
 	AssumeYes bool
 	DryRun    bool
+	// Changed is set by writePolicy to report whether the most recent
+	// mutation would change the policy at all, independent of DryRun or
+	// whether a write actually happened. diff uses it to decide its exit
+	// code, per the design's "exit 1 if it would change anything".
+	Changed bool
 }
 
 // ErrDeclined reports that the operator answered no at the confirmation
@@ -65,7 +70,8 @@ func writePolicy(
 	if err != nil {
 		return err
 	}
-	if next == nil || string(next) == string(current) {
+	env.Changed = next != nil && string(next) != string(current)
+	if !env.Changed {
 		fmt.Fprintf(env.Out, "%s: no change needed\n", what)
 		return nil
 	}

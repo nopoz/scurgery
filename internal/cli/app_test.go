@@ -180,17 +180,43 @@ func runEnd2End(t *testing.T, f *fakeTailnet, args []string, stdin string) (code
 // command: an operator previewing a change must not have it applied. This is
 // checked at the Run level, through the real flag parsing and command
 // dispatch, not against runApply directly, so a diff case that forgets to set
-// DryRun would be caught here.
+// DryRun would be caught here. The bundle here does represent a real change,
+// so this also exercises the exit-1 side of TestRunDiffExitCodeMatchesWhetherItWouldChangeAnything;
+// f.writes staying at 0 is the property this test exists for.
 func TestRunDiffNeverWrites(t *testing.T) {
 	f := &fakeTailnet{policy: []byte(`{"tagOwners": {}}`), etag: `"e1"`, validateOK: true}
 	path := writeBundleFile(t, "test.hujson", `{"tagOwners": {"tag:subnet-router": ["group:eng"]}}`)
 
 	code, _, errb := runEnd2End(t, f, []string{"diff", path, "--backup-dir", t.TempDir()}, "")
-	if code != 0 {
-		t.Fatalf("Run(diff) = %d, stderr=%q", code, errb.String())
+	if code != 1 {
+		t.Fatalf("Run(diff) = %d, want 1: the bundle would change the policy, stderr=%q", code, errb.String())
 	}
 	if f.writes != 0 {
 		t.Errorf("diff must never write, got %d writes", f.writes)
+	}
+}
+
+// TestRunDiffExitCodeMatchesWhetherItWouldChangeAnything pins the design's
+// "dry run, exit 1 if it would change anything" both ways: a bundle already
+// fully installed must exit 0, and one that would add something new must
+// exit 1. Before this fix, cli/app.go returned 0 unconditionally, which
+// broke diff's use as a CI check for policy drift.
+func TestRunDiffExitCodeMatchesWhetherItWouldChangeAnything(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(`{"tagOwners": {"tag:subnet-router": ["group:eng"]}}`), etag: `"e1"`, validateOK: true}
+	path := writeBundleFile(t, "test.hujson", `{"tagOwners": {"tag:subnet-router": ["group:eng"]}}`)
+
+	code, _, errb := runEnd2End(t, f, []string{"diff", path, "--backup-dir", t.TempDir()}, "")
+	if code != 0 {
+		t.Fatalf("Run(diff) on an already-installed bundle = %d, want 0, stderr=%q", code, errb.String())
+	}
+
+	changingPath := writeBundleFile(t, "test2.hujson", `{"tagOwners": {"tag:new": ["group:eng"]}}`)
+	code, _, errb = runEnd2End(t, f, []string{"diff", changingPath, "--backup-dir", t.TempDir()}, "")
+	if code != 1 {
+		t.Fatalf("Run(diff) on a bundle that would add something = %d, want 1, stderr=%q", code, errb.String())
+	}
+	if f.writes != 0 {
+		t.Errorf("diff must never write regardless of its exit code, got %d writes", f.writes)
 	}
 }
 

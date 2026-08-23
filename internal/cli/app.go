@@ -22,6 +22,7 @@ exactly those blocks again, leaving the rest of the file untouched.
                                    [--match-structural]
   scurgery status                  list installed bundles
   scurgery diff   <bundle.hujson>  show what apply would change, write nothing
+                                   (exit 1 if it would change anything, 0 otherwise)
 
 Credentials come from the environment:
   TS_API_KEY   a Tailscale API access token
@@ -126,6 +127,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if cmd == "diff" && env.Changed {
 		return 1
 	}
 	return 0

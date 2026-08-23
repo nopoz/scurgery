@@ -47,6 +47,10 @@ scurgery remove aws-subnet-router
 namespace, `aws-subnet-router`, comes from its filename, and that's what you
 pass to `remove` later.
 
+`diff` exits 1 if applying the bundle would change the policy, and 0 if
+everything in it is already installed, so it works as a CI check for policy
+drift.
+
 ## How it tracks its own blocks
 
 scurgery has no server-side state to work with, so it tracks what it added
