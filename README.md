@@ -4,6 +4,19 @@ scurgery adds a named set of blocks to a Tailscale tailnet policy file and
 later removes exactly those blocks again, leaving everything else in the
 file byte-identical to what it was.
 
+## Contents
+
+- [Why it exists](#why-it-exists)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Credentials](#credentials)
+- [How it tracks its own blocks](#how-it-tracks-its-own-blocks)
+- [Safety](#safety)
+- [Writing a bundle](#writing-a-bundle)
+- [Automation](#automation)
+  - [Terraform](#terraform)
+- [Limitations](#limitations)
+
 ## Why it exists
 
 The Tailscale policy file API is whole-file: you `GET` the whole thing, and
@@ -33,6 +46,12 @@ either takes over the operator's whole policy file to put them there or ends
 its setup instructions with a block to paste in by hand. scurgery is the third
 option: apply the bundle before the stack goes up, remove it after the stack
 comes down.
+
+Two things it deliberately is not. It authenticates with Tailscale API access
+tokens only, not OAuth. And it is a CLI rather than a Terraform provider: a
+configuration cannot declare a bundle as a resource, though the
+`terraform_data` pattern under Automation applies and removes one with the
+stack.
 
 ## Install
 
@@ -278,55 +297,57 @@ fi
 
 ## Limitations
 
-**Re-applying a bundle overwrites scurgery's own previous value, including
-a hand-edit.** When a namespace is applied again with a changed value,
-scurgery updates its own previously-installed value in place rather than
-refusing, since that value is already marked as belonging to the namespace
-being applied. If the operator hand-edited a scurgery-installed value in
-between, that edit is overwritten on the next apply, with no conflict
-raised: scurgery can't tell a deliberate hand-edit apart from the value it
-left there itself. The rendered diff and the confirmation prompt still
-stand between that and the tailnet, so read the diff before confirming.
-This only applies to object members: array elements merge by append, so a
-changed array entry is added alongside the old one, and both stay live
-until one of them is removed.
+| Limitation | When it bites |
+|---|---|
+| Re-applying a bundle overwrites scurgery's own previous value | You hand-edited a value scurgery installed, then apply that bundle again |
+| `--force` cannot be undone | You overwrite a value scurgery does not own |
+| Two bundles sharing a container scurgery created | Bundle A creates a top-level key, bundle B adds into it, and you remove A first |
+| A shared member belongs to whichever bundle installed it first | Two bundles declare a member with the same value |
+| `--match-structural` gives weaker guarantees | The marker comments are gone, so removal matches by value |
+| Duplicate identical array elements cannot be told apart | One array holds two semantically identical entries |
 
-**`--force` is not reversible.** When it overwrites a value already in the
-policy, scurgery does not mark what it replaced, so `remove` cannot bring
-the original back. The backup taken before the write is the only copy of
-what was there. On top of that, scurgery's own self-check (step 4 above)
-does not run on a forced overwrite, because it has no way to tell an
-authorized overwrite apart from accidental damage to content it doesn't
-own. The diff shown at step 6 is the real safeguard for a forced apply:
-read it before confirming.
+**Re-applying a bundle overwrites scurgery's own previous value, including a
+hand-edit.** Applying a namespace again with a changed value updates the
+previously-installed value in place rather than refusing, since that value is
+already marked as belonging to that namespace. scurgery cannot tell a
+deliberate hand-edit apart from the value it left there itself, so no conflict
+is raised. The rendered diff and the confirmation prompt are what stand between
+that and the tailnet, so read the diff before confirming. This affects object
+members only: array elements merge by append, so a changed entry is added
+alongside the old one and both stay live until one is removed.
+
+**`--force` is not reversible.** scurgery does not mark what it replaced, so
+`remove` cannot bring the original back, and the backup taken before the write
+is the only copy of what was there. The self-check (step 4 above) is also
+skipped on a forced overwrite, because scurgery has no way to tell an
+authorized overwrite apart from accidental damage to content it does not own.
+The diff at step 6 is the real safeguard for a forced apply: read it before
+confirming.
 
 **Two bundles sharing a container scurgery created cannot both be cleanly
-removed in one pass.** Say bundle A creates a top-level key that didn't
-exist before, and bundle B later adds its own entries into that same key.
-Removing A first does nothing: A's rules stay live, and scurgery refuses
-the write and explains why. Remove B first, then re-run the removal of A,
-and it completes. This happens because scurgery marks the container's key
-as owned by A, but has no way to also track that B has since added members
-inside it.
+removed in one pass.** If bundle A creates a top-level key that did not exist
+before and bundle B later adds its own entries into that same key, removing A
+first does nothing: A's rules stay live, and scurgery refuses the write and
+explains why. Remove B first, then re-run the removal of A, and it completes.
+scurgery marks the container's key as owned by A, but has no way to also track
+that B has since added members inside it.
 
 **A member two bundles both declare belongs to whichever one installed it
-first.** If bundle A and bundle B both contribute a member with the same
-value, only the first apply marks it; the second apply finds it already
-present and skips it without marking it for itself. When that member
-carries its own marker, `apply` prints a note naming it and the namespace
-that actually owns it. It can't do that when the member lives inside a
-top-level container the first bundle created wholesale: nothing inside such
-a container is individually marked, so there's no owner to name and nothing
-is printed. Removing the owning namespace later removes that member too,
-even though the other bundle also declares it, and removing the other
-namespace never does; in the wholesale-container case, that's the first the
-operator hears of it, visible in the rendered diff before they confirm the
-removal.
+first.** The second apply finds the member already present and skips it without
+marking it for itself. When that member carries its own marker, `apply` prints
+a note naming it and the namespace that actually owns it. It cannot do that
+when the member lives inside a top-level container the first bundle created
+wholesale, since nothing inside such a container is individually marked, so
+there is no owner to name and nothing is printed.
+Removing the owning namespace later removes that member too, even though the
+other bundle also declares it, and removing the other namespace never does. In
+the wholesale-container case the rendered diff is the first the operator hears
+of it, before they confirm the removal.
 
-**Structural removal (`--match-structural`) is a recovery path, not an
-equal alternative.** It's for when the marker comments are gone. Instead of
-reading markers, it matches the bundle's members and elements against the
-policy by value and removes what matches. Because of that:
+**Structural removal (`--match-structural`) is a recovery path, not an equal
+alternative.** It is for when the marker comments are gone. Instead of reading
+markers, it matches the bundle's members and elements against the policy by
+value and removes what matches. Because of that:
 
 - It cannot recognise a block the operator has since edited. Rather than
   guess, it reports those as not found and leaves them alone.
@@ -338,13 +359,6 @@ policy by value and removes what matches. Because of that:
   identical array elements where the bundle names one of them: nothing
   distinguishes which one was meant to survive.
 
-**No OAuth.** Only Tailscale API access tokens are supported.
-
-**No Terraform provider.** scurgery is a CLI. A Terraform configuration
-cannot declare a bundle as a resource; see Automation above for the
-`terraform_data` pattern that applies and removes one with the stack.
-
-**Duplicate identical array elements are matched by value.** Two members of
-an array (say `grants`) that are semantically identical are indistinguishable
-to scurgery; it cannot tell them apart when deciding what to skip, mark, or
-remove.
+**Duplicate identical array elements are matched by value.** Two elements of an
+array (say `grants`) that are semantically identical are indistinguishable to
+scurgery when it decides what to skip, mark, or remove.

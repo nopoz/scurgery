@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -75,5 +76,71 @@ func TestReadmeDocumentsTheConfigFile(t *testing.T) {
 	}
 	if !strings.Contains(readme, "the only keys the file may set") {
 		t.Error("README should document that the key set is closed")
+	}
+}
+
+// slugify reproduces the anchor GitHub derives from a heading: lowercased,
+// with everything but letters, digits, spaces and hyphens dropped, and spaces
+// turned into hyphens.
+func slugify(heading string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(heading) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
+}
+
+// A table of contents rots silently. A link to a heading that has been renamed
+// still renders as a link and simply does nothing when clicked, and a section
+// added without an entry is invisible rather than broken. Nobody reviewing a
+// diff sees either one.
+func TestReadmeTableOfContentsMatchesHeadings(t *testing.T) {
+	b, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+	readme := string(b)
+
+	headings := []string{}
+	for _, m := range regexp.MustCompile(`(?m)^#{2,3} (.+)$`).FindAllStringSubmatch(readme, -1) {
+		if title := strings.TrimSpace(m[1]); title != "Contents" {
+			headings = append(headings, title)
+		}
+	}
+	if len(headings) == 0 {
+		t.Fatal("no headings found; the parser or the README changed shape")
+	}
+
+	linked := map[string]string{}
+	order := []string{}
+	for _, m := range regexp.MustCompile(`(?m)^\s*- \[([^\]]+)\]\(#([^)]+)\)$`).FindAllStringSubmatch(readme, -1) {
+		linked[m[1]] = m[2]
+		order = append(order, m[1])
+	}
+
+	for _, title := range headings {
+		anchor, ok := linked[title]
+		if !ok {
+			t.Errorf("section %q has no entry in the table of contents", title)
+			continue
+		}
+		if want := slugify(title); anchor != want {
+			t.Errorf("table of contents links %q to #%s, but GitHub's anchor for it is #%s", title, anchor, want)
+		}
+	}
+
+	inReadme := map[string]bool{}
+	for _, title := range headings {
+		inReadme[title] = true
+	}
+	for _, title := range order {
+		if !inReadme[title] {
+			t.Errorf("table of contents lists %q, which is not a heading in the README", title)
+		}
 	}
 }
