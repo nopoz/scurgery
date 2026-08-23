@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/nopoz/scurgery/internal/api"
@@ -34,6 +33,10 @@ Exit codes:
 Credentials come from the environment:
   TS_API_KEY   a Tailscale API access token
   TS_TAILNET   the tailnet name, as shown in the admin console
+
+Those two names may also live in a config file, one KEY=VALUE per line, at
+~/.config/scurgery/config (or under $XDG_CONFIG_HOME). It must not be
+readable by anyone but its owner. The environment and --tailnet win over it.
 `
 
 // Exit codes are a contract automation depends on: a caller must be able to
@@ -71,6 +74,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return exitUsage
 	}
 
+	cfgPath := configPath()
+	cfg, cfgErr := loadConfig(cfgPath)
+	if cfgErr != nil {
+		fmt.Fprintf(stderr, "error: %v\n", cfgErr)
+		return exitError
+	}
+
 	fs := flag.NewFlagSet("scurgery "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -80,7 +90,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		force           = fs.Bool("force", false, "overwrite conflicting members")
 		skipConflicts   = fs.Bool("skip-conflicts", false, "install everything except conflicts")
 		matchStructural = fs.Bool("match-structural", false, "remove by content when markers are absent")
-		tailnet         = fs.String("tailnet", os.Getenv("TS_TAILNET"), "tailnet name")
+		tailnet         = fs.String("tailnet", credential("TS_TAILNET", cfg), "tailnet name")
 		backupDir       = fs.String("backup-dir", ".", "directory for pre-change policy backups")
 		jsonOut         = fs.Bool("json", false, "machine-readable output (status and diff only)")
 	)
@@ -114,13 +124,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return exitUsage
 	}
 
-	token := os.Getenv("TS_API_KEY")
+	token := credential("TS_API_KEY", cfg)
 	if token == "" {
-		fmt.Fprintln(stderr, "error: TS_API_KEY is not set. Create an API access token under Settings, Keys in the admin console")
+		fmt.Fprintf(stderr, "error: no API token. Set TS_API_KEY%s. Create an access token under Settings, Keys in the admin console\n", configHint(cfgPath))
 		return exitError
 	}
 	if *tailnet == "" {
-		fmt.Fprintln(stderr, "error: no tailnet. Set TS_TAILNET or pass --tailnet")
+		fmt.Fprintf(stderr, "error: no tailnet. Set TS_TAILNET, pass --tailnet%s\n", configHint(cfgPath))
 		return exitError
 	}
 
