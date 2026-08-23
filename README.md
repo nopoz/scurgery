@@ -9,6 +9,7 @@ file byte-identical to what it was.
 - [The problem](#the-problem)
 - [Why not an existing tool](#why-not-an-existing-tool)
 - [Install](#install)
+  - [Release binaries](#release-binaries)
 - [Quick start](#quick-start)
 - [Credentials](#credentials)
 - [How it tracks its own blocks](#how-it-tracks-its-own-blocks)
@@ -69,6 +70,26 @@ go install github.com/nopoz/scurgery/cmd/scurgery@latest
 Requires Go 1.26.
 
 `scurgery version` reports the build you are running.
+
+### Release binaries
+
+Each tagged release publishes static binaries for Linux, macOS and Windows on
+amd64 and arm64, along with a `checksums.txt` covering every archive. To
+install one without a Go toolchain, download the archive for your platform
+from the [releases page](https://github.com/nopoz/scurgery/releases), verify
+it, and extract it:
+
+```
+sha256sum -c checksums.txt --ignore-missing
+tar -xzf scurgery_v0.1.0_linux_amd64.tar.gz
+```
+
+The archives carry a build provenance attestation, so you can also confirm
+which workflow run produced one:
+
+```
+gh attestation verify scurgery_v0.1.0_linux_amd64.tar.gz --repo nopoz/scurgery
+```
 
 ## Quick start
 

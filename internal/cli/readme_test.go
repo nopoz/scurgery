@@ -174,3 +174,49 @@ func TestReadmeDocumentsTheVersionCommand(t *testing.T) {
 		t.Errorf("usage text does not document %q", invocation)
 	}
 }
+
+// TestReadmeReleaseArtifactNamesMatchTheWorkflow derives the archive and
+// checksum names from the release workflow that builds them. An operator
+// follows these names to download and verify a binary, and the workflow is
+// the only thing that decides what they are.
+func TestReadmeReleaseArtifactNamesMatchTheWorkflow(t *testing.T) {
+	wf, err := os.ReadFile("../../.github/workflows/release.yml")
+	if err != nil {
+		t.Fatalf("reading release.yml: %v", err)
+	}
+	workflow := string(wf)
+
+	b, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+	readme := string(b)
+
+	// Rebuild an example archive name from the workflow's own template.
+	nameTemplate := regexp.MustCompile(`name="([^"]+)"`).FindStringSubmatch(workflow)
+	if nameTemplate == nil {
+		t.Fatal("release.yml no longer assigns an archive name; the README example cannot be checked")
+	}
+	replacer := strings.NewReplacer(
+		"${GITHUB_REF_NAME}", "v0.1.0",
+		"${goos}", "linux",
+		"${goarch}", "amd64",
+	)
+	example := replacer.Replace(nameTemplate[1]) + ".tar.gz"
+	if strings.Contains(example, "${") {
+		t.Fatalf("archive name template has an unrecognised variable: %q", nameTemplate[1])
+	}
+	if !strings.Contains(readme, example) {
+		t.Errorf("README's download example does not match what the workflow builds (%q)", example)
+	}
+
+	// The checksum file the workflow writes is the one the README tells an
+	// operator to verify against.
+	checksums := regexp.MustCompile(`> (checksums\.\w+)`).FindStringSubmatch(workflow)
+	if checksums == nil {
+		t.Fatal("release.yml no longer writes a checksums file")
+	}
+	if !strings.Contains(readme, "sha256sum -c "+checksums[1]) {
+		t.Errorf("README does not tell the operator to verify against %q", checksums[1])
+	}
+}
