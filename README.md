@@ -15,6 +15,9 @@ file byte-identical to what it was.
 - [Safety](#safety)
 - [Writing a bundle](#writing-a-bundle)
 - [Automation](#automation)
+  - [Exit codes](#exit-codes)
+  - [JSON output](#json-output)
+  - [Checking for drift in CI](#checking-for-drift-in-ci)
   - [Terraform](#terraform)
 - [Limitations](#limitations)
 
@@ -214,8 +217,11 @@ involved.
 
 ## Automation
 
-`apply` and `remove` take `--yes`, so nothing waits for a human. Exit codes
-are a contract:
+`apply` and `remove` take `--yes`, so nothing waits for a human.
+
+### Exit codes
+
+Exit codes are a contract:
 
 | Code | Meaning |
 |---|---|
@@ -228,10 +234,12 @@ A runtime failure is deliberately not 1. A CI gate that reads an expired
 token as "the policy needs updating" is worse than one that reads nothing at
 all.
 
-`status` and `diff` also take `--json`, which puts one JSON document on
-stdout and nothing else. Everything human-readable goes to stderr instead,
-including the per-conflict detail lines, so nothing is lost by asking for
-JSON. A failure prints its message and emits no document at all.
+### JSON output
+
+`status` and `diff` take `--json`, which puts one JSON document on stdout and
+nothing else. Everything human-readable goes to stderr instead, including the
+per-conflict detail lines, so nothing is lost by asking for JSON. A failure
+prints its message and emits no document at all.
 
 ```
 $ scurgery status --json
@@ -243,6 +251,21 @@ $ scurgery diff aws-router.hujson --json
 
 `--json` is rejected on `apply` and `remove` rather than accepted and
 ignored, so nothing can quietly believe it got a machine-readable result.
+
+### Checking for drift in CI
+
+`diff` prints what would change and writes nothing, so it works as a gate. Its
+exit code says which of the three outcomes above happened, which is what lets a
+script tell "the policy needs updating" apart from "the check itself failed":
+
+```sh
+scurgery diff policy.hujson
+case $? in
+  0) ;;                                          # up to date
+  1) echo "Policy needs updating."; exit 1 ;;
+  *) echo "Check failed. See the error above."; exit 1 ;;
+esac
+```
 
 ### Terraform
 
@@ -279,25 +302,6 @@ Three things to know:
   config file works here too, and the environment still wins over it.
 - Provisioners run outside the plan, so `terraform plan` will not show the
   policy change. Use `scurgery diff` for that.
-
-`diff` doubles as a CI check. It prints what would change and sets its exit
-code to say which of the three outcomes happened, so a script can tell "the
-policy needs updating" apart from "the check itself failed":
-
-```sh
-scurgery diff policy.hujson
-result=$?
-
-if [ $result -eq 0 ]; then
-  echo "Policy is up to date."
-elif [ $result -eq 1 ]; then
-  echo "Policy needs updating. Run scurgery apply."
-  exit 1
-else
-  echo "Could not check the policy. Look at the error above."
-  exit 1
-fi
-```
 
 ## Limitations
 
