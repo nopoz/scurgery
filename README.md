@@ -6,7 +6,7 @@
 [![Build provenance](https://img.shields.io/badge/build%20provenance-attested-success)](#release-binaries)
 [![License](https://img.shields.io/github/license/nopoz/scurgery)](LICENSE)
 
-scurgery adds a named set of blocks to a Tailscale tailnet policy file and
+scurgery adds a named set of blocks to a Tailscale access policy file and
 later removes exactly those blocks again, leaving everything else in the
 file byte-identical to what it was.
 
@@ -27,6 +27,7 @@ file byte-identical to what it was.
   - [Checking for drift in CI](#checking-for-drift-in-ci)
   - [Terraform](#terraform)
 - [Limitations](#limitations)
+- [Support](#support)
 
 ## The problem
 
@@ -332,6 +333,11 @@ Three things to know:
 - Provisioners run outside the plan, so `terraform plan` will not show the
   policy change. Use `scurgery diff` for that.
 
+A working example of this pattern:
+[tailscale-subnet-router-aws](https://github.com/nopoz/tailscale-subnet-router-aws)
+applies a bundle of tag owners, an approved route and a couple of grants before
+its nodes come up, and removes them when the stack is destroyed.
+
 ## Limitations
 
 | Limitation | When it bites |
@@ -399,3 +405,20 @@ value and removes what matches. Because of that:
 **Duplicate identical array elements are matched by value.** Two elements of an
 array (say `grants`) that are semantically identical are indistinguishable to
 scurgery when it decides what to skip, mark, or remove.
+
+## Support
+
+If you like this project you can show your support by giving it a star and also
+on [tailscale-subnet-router-aws](https://github.com/nopoz/tailscale-subnet-router-aws),
+the Terraform configuration this was written for.
+
+Questions and bug reports are welcome. [Open an issue](https://github.com/nopoz/scurgery/issues),
+and include the output of `scurgery version` and the command you ran.
+
+Check out some of my other projects:
+
+- [pfsense-dnscrypt-proxy](https://github.com/nopoz/pfsense-dnscrypt-proxy): encrypted DNS on pfSense, with full GUI support
+- [portrieve](https://github.com/nopoz/portrieve): back up, restore and migrate Portainer stacks as plain Docker Compose files
+- [hosaka](https://github.com/nopoz/hosaka): a Docker image update monitor, with notifications and one-click updates
+
+The rest are at [github.com/nopoz](https://github.com/nopoz).
