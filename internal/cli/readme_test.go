@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,11 @@ func TestExitCodesAreDocumentedWherePromised(t *testing.T) {
 // wrong answer rather than a stale sentence. The path is derived from
 // defaultConfigPath rather than written out twice.
 func TestReadmeDocumentsTheConfigFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The documented path is a POSIX one, and defaultConfigPath rightly
+		// does not produce it on Windows, so there is nothing to compare.
+		t.Skip("the config file path this pins is documented for POSIX hosts")
+	}
 	b, err := os.ReadFile("../../README.md")
 	if err != nil {
 		t.Fatalf("reading README.md: %v", err)

@@ -152,6 +152,9 @@ func TestDefaultConfigPathPrefersXDGConfigHome(t *testing.T) {
 }
 
 func TestDefaultConfigPathFallsBackToHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the home directory comes from USERPROFILE on Windows, so setting HOME proves nothing")
+	}
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "/home/operator")
 	if got, want := defaultConfigPath(), filepath.Join("/home/operator", ".config", "scurgery", "config"); got != want {

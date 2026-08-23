@@ -32,23 +32,11 @@ jobs:
         # than a courtesy. macOS covers the other non-Linux mode-bit case.
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      # harden-runner supports Linux runners only, so the macOS and Windows
-      # legs of this matrix run without it.
-      - name: Harden runner
-        if: runner.os == 'Linux'
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            api.github.com:443
-            github.com:443
-            objects.githubusercontent.com:443
-            proxy.golang.org:443
-            release-assets.githubusercontent.com:443
-            results-receiver.actions.githubusercontent.com:443
-            storage.googleapis.com:443
-            sum.golang.org:443
-            *.blob.core.windows.net:443
+      # No harden-runner on this job. It supports Linux runners only, and an
+      # action's pre-step runs even when a step-level condition skips the step
+      # itself, so guarding it still leaves the macOS and Windows legs
+      # reporting a failed agent install. The race job below runs this same
+      # suite on Linux with egress blocked, which covers the same ground.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
