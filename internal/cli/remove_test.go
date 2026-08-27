@@ -537,3 +537,203 @@ func TestRemoveUnidentifiablePresenceGetsAnHonestMessage(t *testing.T) {
 		t.Errorf("the raw self-check message should never surface here, got %q", msg)
 	}
 }
+
+// A bundle that is not installed at all: no markers name it, and nothing it
+// declares matches the policy by content either. Something else is installed,
+// so there is a real answer to give about what the policy does hold.
+const uninstalledPolicy = `{
+	"tagOwners": {
+		"tag:mine": ["autogroup:admin"],
+		// scurgery:other-bundle
+		"tag:other": ["group:eng"],
+	},
+}`
+
+const uninstalledBundle = `{
+	"tagOwners": {
+		"tag:never-applied": ["group:eng"],
+	},
+}`
+
+// Removing something that was never installed is a no-op, and naming the
+// bundle file has to reach the same conclusion as naming the bundle: the same
+// exit code, and the same account of what is installed instead. A teardown
+// script that passes the path it applied is otherwise not rerunnable.
+func TestRemoveOfANeverInstalledBundleAgreesWithTheNameForm(t *testing.T) {
+	byName := &fakeTailnet{policy: []byte(uninstalledPolicy), etag: `"e1"`, validateOK: true}
+	nameCode, nameOut, nameErr := runEnd2End(t, byName, []string{"remove", "never-applied", "--yes", "--backup-dir", t.TempDir()}, "")
+	if nameCode != 0 {
+		t.Fatalf("remove by name = %d, want 0, stderr=%q", nameCode, nameErr.String())
+	}
+
+	byFile := &fakeTailnet{policy: []byte(uninstalledPolicy), etag: `"e1"`, validateOK: true}
+	path := writeBundleFile(t, "never-applied.hujson", uninstalledBundle)
+	fileCode, fileOut, fileErr := runEnd2End(t, byFile, []string{"remove", path, "--yes", "--backup-dir", t.TempDir()}, "")
+	if fileCode != nameCode {
+		t.Errorf("remove by bundle file = %d but remove by name = %d; the same request must reach the same exit code, stderr=%q",
+			fileCode, nameCode, fileErr.String())
+	}
+	if byName.writes != 0 || byFile.writes != 0 {
+		t.Errorf("removing something never installed must not write, got %d and %d", byName.writes, byFile.writes)
+	}
+	for _, got := range []string{nameOut.String(), fileOut.String()} {
+		if !strings.Contains(got, "installed namespaces: other-bundle") {
+			t.Errorf("a removal that matched nothing should name what is installed instead, got %q", got)
+		}
+	}
+}
+
+// The refusal that names --match-structural exists to offer a recovery when
+// the markers were stripped from a bundle that is still there. With nothing
+// of the bundle in the policy there is nothing to recover, so pointing at the
+// flag sends the operator after a run that would remove nothing.
+func TestRemoveOfANeverInstalledBundleDoesNotSuggestStructuralMatching(t *testing.T) {
+	f := &fakeTailnet{policy: []byte(uninstalledPolicy), etag: `"e1"`, validateOK: true}
+	env, out, done := testEnv(t, f, "")
+	defer done()
+
+	path := writeBundleFile(t, "never-applied.hujson", uninstalledBundle)
+	if err := runRemove(context.Background(), env, path, "", false); err != nil {
+		t.Fatalf("runRemove: %v", err)
+	}
+	if !strings.Contains(out.String(), "is not installed") {
+		t.Errorf("the operator handed over a bundle file and should be told it is not installed, got %q", out.String())
+	}
+	if strings.Contains(out.String(), "--match-structural") {
+		t.Errorf("nothing of this bundle is in the policy, so --match-structural would remove nothing; got %q", out.String())
+	}
+	if strings.Contains(out.String(), "may have been removed") {
+		t.Errorf("the markers were never there to be removed; got %q", out.String())
+	}
+}
+
+// Exit codes are a contract, so the situations remove can land in are pinned
+// together rather than one at a time: what matters is not only each code but
+// that the codes agree where the situations do. Naming the bundle file and
+// naming the bundle are the same request and must answer the same way, and no
+// row may return 1, which belongs to diff and means the policy would change.
+func TestRemoveExitCodesAcrossEverySituation(t *testing.T) {
+	const marked = `{
+	"tagOwners": {
+		"tag:mine": ["autogroup:admin"],
+		// scurgery:aws-router
+		"tag:aws-app": ["group:eng"],
+	},
+}`
+	const stripped = `{
+	"tagOwners": {
+		"tag:mine": ["autogroup:admin"],
+		"tag:aws-app": ["group:eng"],
+	},
+}`
+	const clean = `{
+	"tagOwners": {
+		"tag:mine": ["autogroup:admin"],
+	},
+}`
+	const bundle = `{
+	"tagOwners": {
+		"tag:aws-app": ["group:eng"],
+	},
+}`
+	const shared = `{
+	// scurgery:ns-a owns-key
+	"tagOwners": {
+		"tag:a": ["autogroup:admin"],
+		// scurgery:ns-b
+		"tag:b": ["autogroup:admin"],
+	},
+}`
+
+	cases := []struct {
+		name       string
+		policy     string
+		args       []string
+		wantCode   int
+		wantWrites int
+	}{
+		{"installed, by name", marked, []string{"remove", "aws-router"}, 0, 1},
+		{"installed, by file", marked, []string{"remove", "BUNDLE"}, 0, 1},
+		{"not installed, by name", clean, []string{"remove", "aws-router"}, 0, 0},
+		{"not installed, by file", clean, []string{"remove", "BUNDLE"}, 0, 0},
+		{"markers stripped, by file, no flag", stripped, []string{"remove", "BUNDLE"}, 3, 0},
+		{"markers stripped, by file, structural", stripped, []string{"remove", "BUNDLE", "--match-structural"}, 0, 1},
+		{"structural asked for by name", stripped, []string{"remove", "aws-router", "--match-structural"}, 3, 0},
+		{"name flag with a bare name", stripped, []string{"remove", "aws-router", "--name", "x"}, 3, 0},
+		{"shared container", shared, []string{"remove", "ns-a"}, 3, 0},
+		{"missing bundle file", clean, []string{"remove", "./nope.hujson"}, 3, 0},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeBundleFile(t, "aws-router.hujson", bundle)
+			args := append([]string{}, c.args...)
+			for i := range args {
+				if args[i] == "BUNDLE" {
+					args[i] = path
+				}
+			}
+			args = append(args, "--yes", "--backup-dir", t.TempDir())
+			f := &fakeTailnet{policy: []byte(c.policy), etag: `"e1"`, validateOK: true}
+			code, out, errb := runEnd2End(t, f, args, "")
+			if code != c.wantCode {
+				t.Errorf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, c.wantCode, out.String(), errb.String())
+			}
+			if f.writes != c.wantWrites {
+				t.Errorf("writes = %d, want %d", f.writes, c.wantWrites)
+			}
+			if code == 1 {
+				t.Error("exit 1 is diff's drift code and must never come from remove")
+			}
+			if strings.Contains(errb.String(), "panic") {
+				t.Error("panicked")
+			}
+		})
+	}
+}
+
+// The warning ends by inviting the operator to delete the container by hand,
+// so it has to be raised for exactly the containers the removal emptied. This
+// policy holds one of each case: tagOwners is emptied by the removal,
+// autoApprovers was already empty and so is none of scurgery's doing, and acls
+// keeps a rule the operator wrote.
+func TestRemoveStructuralWarnsOnlyAboutContainersItEmptied(t *testing.T) {
+	const policy = `{
+	"tagOwners": {
+		"tag:solo": ["group:eng"],
+	},
+	"acls": [
+		{"action": "accept", "src": ["tag:solo"], "dst": ["*:*"]},
+		{"action": "accept", "src": ["*"], "dst": ["*:*"]},
+	],
+	"autoApprovers": {},
+}`
+	const bundle = `{
+	"tagOwners": {
+		"tag:solo": ["group:eng"],
+	},
+	"acls": [
+		{"action": "accept", "src": ["tag:solo"], "dst": ["*:*"]},
+	],
+	"autoApprovers": {
+		"routes": {"10.0.0.0/8": ["tag:solo"]},
+	},
+}`
+	f := &fakeTailnet{policy: []byte(policy), etag: `"e1"`, validateOK: true}
+	env, out, done := testEnv(t, f, "")
+	defer done()
+
+	p := writeBundleFile(t, "solo.hujson", bundle)
+	if err := runRemove(context.Background(), env, p, "", true); err != nil {
+		t.Fatalf("runRemove: %v", err)
+	}
+	if !strings.Contains(out.String(), `"tagOwners" is now empty`) {
+		t.Errorf("the removal emptied tagOwners and must say so, got %q", out.String())
+	}
+	if strings.Contains(out.String(), `"autoApprovers" is now empty`) {
+		t.Errorf("autoApprovers was already empty before the removal, so scurgery did not leave that shell behind, got %q", out.String())
+	}
+	if strings.Contains(out.String(), `"acls" is now empty`) {
+		t.Errorf("acls still holds a rule the operator wrote and is not empty at all, got %q", out.String())
+	}
+}

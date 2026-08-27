@@ -118,9 +118,7 @@ func runRemove(ctx context.Context, env *Env, target, nameOverride string, match
 			return nil, err
 		}
 		if b == nil {
-			if len(installed) > 0 {
-				fmt.Fprintf(env.Out, "installed namespaces: %s\n", strings.Join(installed, ", "))
-			}
+			reportInstalled(env, installed)
 			return nil, nil
 		}
 		if !matchStructural {
@@ -128,10 +126,29 @@ func runRemove(ctx context.Context, env *Env, target, nameOverride string, match
 			if err != nil {
 				return nil, err
 			}
-			return nil, fmt.Errorf("no %q markers found in the policy. Comment markers may have been removed. "+
-				"Matching on content instead would remove %d entr%s. "+
-				"Nothing was changed: re-run with --match-structural to proceed",
-				name, preview.Removed, plural(preview.Removed))
+			if preview.Removed > 0 {
+				return nil, fmt.Errorf("no %q markers found in the policy. Comment markers may have been removed. "+
+					"Matching on content instead would remove %d entr%s. "+
+					"Nothing was changed: re-run with --match-structural to proceed",
+					name, preview.Removed, plural(preview.Removed))
+			}
+			// Nothing names this bundle and nothing it declares is in the
+			// policy by content either, so there is nothing for
+			// --match-structural to recover and pointing at the flag would
+			// send the operator after a run that removes nothing. Naming the
+			// bundle file has to reach the same answer as naming the bundle,
+			// or a teardown script cannot be run twice.
+			//
+			// This cannot tell "never applied" apart from "applied, markers
+			// stripped, and every entry edited since", and deliberately does
+			// not try: one entry surviving unedited puts this above the line
+			// and refuses, and the per-entry account of what was looked for
+			// is what --match-structural prints. Listing it here instead
+			// would put five lines of "not found" in front of every clean
+			// teardown, which reads as a warning and is not one.
+			fmt.Fprintf(env.Out, "%q is not installed: no markers name it, and nothing it declares matches the policy by content either\n", name)
+			reportInstalled(env, installed)
+			return nil, nil
 		}
 
 		res, err = policy.RemoveStructural(current, b.Data)
@@ -147,7 +164,7 @@ func runRemove(ctx context.Context, env *Env, target, nameOverride string, match
 		usedStructural = true
 		fmt.Fprintf(env.Out, "warning: the marker-based self-check cannot run for a structural removal, since it "+
 			"relies on markers this policy no longer has; a reduced content check ran in its place\n")
-		residue, err := emptiedContainers(res.Policy, b.Data)
+		residue, err := emptiedContainers(current, res.Policy, b.Data)
 		if err != nil {
 			return nil, err
 		}
@@ -161,6 +178,15 @@ func runRemove(ctx context.Context, env *Env, target, nameOverride string, match
 	}, verify)
 }
 
+// reportInstalled names what scurgery does hold, which is the useful thing to
+// say when the operator asked to remove something it does not. Both ways of
+// asking for a removal that is a no-op go through here, so they stay in step.
+func reportInstalled(env *Env, installed []string) {
+	if len(installed) > 0 {
+		fmt.Fprintf(env.Out, "installed namespaces: %s\n", strings.Join(installed, ", "))
+	}
+}
+
 func stillPresent(installed []string, name string) bool {
 	for _, n := range installed {
 		if n == name {
@@ -170,23 +196,24 @@ func stillPresent(installed []string, name string) bool {
 	return false
 }
 
-// emptiedContainers reports the top-level bundle keys whose container in the
-// resulting policy was left with no members or elements at all.
-func emptiedContainers(resultPolicy, bundleData []byte) ([]string, error) {
-	root, err := hujson.Parse(resultPolicy)
+// emptiedContainers reports the top-level bundle keys whose container the
+// removal left with no members or elements at all. A container the operator
+// was already keeping empty is not one of them: scurgery did not empty it, and
+// telling them to delete it by hand would point them at their own content.
+func emptiedContainers(before, after, bundleData []byte) ([]string, error) {
+	beforeObj, err := topLevelObject(before, "current policy")
 	if err != nil {
-		return nil, fmt.Errorf("parsing result: %w", err)
+		return nil, err
 	}
-	bv, err := hujson.Parse(bundleData)
+	afterObj, err := topLevelObject(after, "result")
 	if err != nil {
-		return nil, fmt.Errorf("parsing bundle: %w", err)
+		return nil, err
 	}
-	rootObj, ok := root.Value.(*hujson.Object)
-	if !ok {
-		return nil, nil
+	bundleObj, err := topLevelObject(bundleData, "bundle")
+	if err != nil {
+		return nil, err
 	}
-	bundleObj, ok := bv.Value.(*hujson.Object)
-	if !ok {
+	if beforeObj == nil || afterObj == nil || bundleObj == nil {
 		return nil, nil
 	}
 
@@ -196,24 +223,44 @@ func emptiedContainers(resultPolicy, bundleData []byte) ([]string, error) {
 		if key == "" {
 			continue
 		}
-		for _, m := range rootObj.Members {
-			if literalName(m.Name) != key {
-				continue
-			}
-			switch tv := m.Value.Value.(type) {
-			case *hujson.Object:
-				if len(tv.Members) == 0 {
-					empty = append(empty, key)
-				}
-			case *hujson.Array:
-				if len(tv.Elements) == 0 {
-					empty = append(empty, key)
-				}
-			}
-			break
+		if n, ok := containerLength(afterObj, key); !ok || n > 0 {
+			continue
 		}
+		if n, ok := containerLength(beforeObj, key); !ok || n == 0 {
+			continue // already empty before the removal, so not scurgery's doing
+		}
+		empty = append(empty, key)
 	}
 	return empty, nil
+}
+
+// topLevelObject parses a policy or bundle and returns its root object, or nil
+// when the root is not an object at all.
+func topLevelObject(data []byte, what string) (*hujson.Object, error) {
+	v, err := hujson.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", what, err)
+	}
+	o, _ := v.Value.(*hujson.Object)
+	return o, nil
+}
+
+// containerLength reports how many members or elements the top-level key's
+// container holds, and whether that key names a container at all.
+func containerLength(root *hujson.Object, key string) (int, bool) {
+	for _, m := range root.Members {
+		if literalName(m.Name) != key {
+			continue
+		}
+		switch tv := m.Value.Value.(type) {
+		case *hujson.Object:
+			return len(tv.Members), true
+		case *hujson.Array:
+			return len(tv.Elements), true
+		}
+		return 0, false
+	}
+	return 0, false
 }
 
 func literalName(v hujson.Value) string {
