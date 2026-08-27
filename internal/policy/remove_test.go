@@ -3,6 +3,8 @@ package policy
 import (
 	"strings"
 	"testing"
+
+	"github.com/tailscale/hujson"
 )
 
 const removeBundleGrants = `{
@@ -381,5 +383,249 @@ func TestRemoveStructuralWillNotRemoveAnEditedArrayElement(t *testing.T) {
 	}
 	if !strings.Contains(string(res.Policy), `"src": ["*"]`) || !strings.Contains(string(res.Policy), `"dst": ["*"]`) {
 		t.Error("the operator's original catch-all grant must survive; an unconditional match would delete it instead")
+	}
+}
+
+// A marked member's leading extra is not scurgery's alone. Everything after
+// the previous member's comma lands there, so an operator annotating their
+// own rule after the apply puts their comment in front of scurgery's marker.
+// Removal must take the marker run and leave the rest.
+func TestRemoveKeepsAnOperatorCommentWrittenAboveAMarkedMember(t *testing.T) {
+	before := `{
+	"tagOwners": {
+		"tag:mine": ["group:eng"], // load bearing, do not delete
+		// scurgery:aws-router
+		"tag:aws-app": ["autogroup:admin"],
+	},
+}
+`
+	want := `{
+	"tagOwners": {
+		"tag:mine": ["group:eng"], // load bearing, do not delete
+	},
+}
+`
+	res, err := Remove([]byte(before), "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("remove ate the operator's comment\n--- want ---\n%s\n--- got ---\n%s", want, res.Policy)
+	}
+}
+
+func TestRemoveKeepsAnOperatorCommentWrittenAboveAMarkedArrayElement(t *testing.T) {
+	before := `{
+	"acls": [
+		{"action": "accept"}, // load bearing, do not delete
+		// scurgery:aws-router
+		{"action": "accept", "src": ["tag:aws-app"]},
+	],
+}
+`
+	want := `{
+	"acls": [
+		{"action": "accept"}, // load bearing, do not delete
+	],
+}
+`
+	res, err := Remove([]byte(before), "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("remove ate the operator's comment\n--- want ---\n%s\n--- got ---\n%s", want, res.Policy)
+	}
+}
+
+// The same shape one level up: the comment sits in the leading extra of a
+// top-level key scurgery created, which removal drops wholesale.
+func TestRemoveKeepsAnOperatorCommentWrittenAboveACreatedKey(t *testing.T) {
+	before := `{
+	"acls": [], // keep this list empty on purpose
+	// scurgery:aws-router owns-key
+	"ssh": [
+		{"action": "accept"},
+	],
+}
+`
+	want := `{
+	"acls": [], // keep this list empty on purpose
+}
+`
+	res, err := Remove([]byte(before), "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("remove ate the operator's comment\n--- want ---\n%s\n--- got ---\n%s", want, res.Policy)
+	}
+}
+
+// Applies append, so a second namespace's entries sit after the first's. The
+// rescued comment then belongs in front of the member that follows, not at
+// the end of the container.
+func TestRemoveMovesARescuedCommentOntoTheNextSurvivingMember(t *testing.T) {
+	before := `{
+	"tagOwners": {
+		"tag:mine": ["group:eng"], // load bearing, do not delete
+		// scurgery:ns-one
+		"tag:one": ["autogroup:admin"],
+		// scurgery:ns-two
+		"tag:two": ["autogroup:admin"],
+	},
+}
+`
+	want := `{
+	"tagOwners": {
+		"tag:mine": ["group:eng"], // load bearing, do not delete
+		// scurgery:ns-two
+		"tag:two": ["autogroup:admin"],
+	},
+}
+`
+	res, err := Remove([]byte(before), "ns-one")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("rescued comment landed in the wrong place\n--- want ---\n%s\n--- got ---\n%s", want, res.Policy)
+	}
+}
+
+// The rescued run ends where scurgery's own newline was, so putting it back
+// in front of something that does not start a new line would leave a line
+// comment swallowing the rest of the container.
+func TestRemoveKeepsARescuedLineCommentFromSwallowingTheCloser(t *testing.T) {
+	before := `{"acls": [{"action": "accept"}, // load bearing, do not delete
+// scurgery:aws-router
+{"action": "accept", "src": ["tag:aws-app"]}]}
+`
+	want := `{"acls": [{"action": "accept"} // load bearing, do not delete
+]}
+`
+	res, err := Remove([]byte(before), "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Fatalf("wrong result\n--- want ---\n%q\n--- got ---\n%q", want, res.Policy)
+	}
+	if _, err := hujson.Parse(res.Policy); err != nil {
+		t.Errorf("result does not parse, the rescued comment swallowed the closing bracket: %v", err)
+	}
+}
+
+// The same carry one level up: a key scurgery created is not always the last
+// one, since a later apply or a hand edit can add another after it.
+func TestRemoveMovesARescuedCommentOntoTheNextSurvivingKey(t *testing.T) {
+	before := `{
+	"acls": [], // keep this list empty on purpose
+	// scurgery:aws-router owns-key
+	"ssh": [
+		{"action": "accept"},
+	],
+	"tagOwners": {},
+}
+`
+	want := `{
+	"acls": [], // keep this list empty on purpose
+	"tagOwners": {},
+}
+`
+	res, err := Remove([]byte(before), "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("rescued comment landed in the wrong place\n--- want ---\n%s\n--- got ---\n%s", want, res.Policy)
+	}
+}
+
+// markerExtra writes LF, but the policy around it may not. Rescuing a run from
+// a CRLF file must not leave a stray carriage return behind.
+func TestRemoveOnACRLFPolicyKeepsTheLineEndings(t *testing.T) {
+	pristine := "{\r\n\t\"tagOwners\": {\r\n\t\t\"tag:mine\": [\"group:eng\"],\r\n\t},\r\n}\r\n"
+	bundle := "{\r\n\t\"tagOwners\": {\r\n\t\t\"tag:aws-app\": [\"autogroup:admin\"],\r\n\t},\r\n}\r\n"
+
+	applied, err := Apply([]byte(pristine), []byte(bundle), "aws-router", ApplyOptions{})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	back, err := Remove(applied.Policy, "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(back.Policy) != pristine {
+		t.Errorf("CRLF round trip is not byte identical\nwant %q\ngot  %q", pristine, back.Policy)
+	}
+
+	edited := "{\r\n\t\"tagOwners\": {\r\n\t\t\"tag:mine\": [\"group:eng\"], // load bearing\r\n\t\t// scurgery:aws-router\r\n\t\t\"tag:aws-app\": [\"autogroup:admin\"],\r\n\t},\r\n}\r\n"
+	want := "{\r\n\t\"tagOwners\": {\r\n\t\t\"tag:mine\": [\"group:eng\"], // load bearing\r\n\t},\r\n}\r\n"
+	res, err := Remove([]byte(edited), "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("rescued comment gained a stray carriage return\nwant %q\ngot  %q", want, res.Policy)
+	}
+}
+
+// Rescued runs from consecutive removed members must stay on separate lines,
+// or the first one's line comment swallows the second.
+func TestRemoveKeepsRescuedCommentsFromConsecutiveMembersApart(t *testing.T) {
+	before := `{
+	"tagOwners": {
+		"tag:mine": ["group:eng"], // first note
+		// scurgery:aws-router
+		"tag:one": ["autogroup:admin"], // second note
+		// scurgery:aws-router
+		"tag:two": ["autogroup:admin"],
+	},
+}
+`
+	want := `{
+	"tagOwners": {
+		"tag:mine": ["group:eng"], // first note
+ // second note
+	},
+}
+`
+	res, err := Remove([]byte(before), "aws-router")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("rescued comments were merged onto one line\nwant %q\ngot  %q", want, res.Policy)
+	}
+}
+
+// The array counterpart: two namespaces appending to the same array leaves the
+// first one's element with a survivor behind it.
+func TestRemoveMovesARescuedCommentOntoTheNextSurvivingElement(t *testing.T) {
+	before := `{
+	"acls": [
+		{"action": "accept"}, // load bearing, do not delete
+		// scurgery:ns-one
+		{"action": "accept", "src": ["tag:one"]},
+		// scurgery:ns-two
+		{"action": "accept", "src": ["tag:two"]},
+	],
+}
+`
+	want := `{
+	"acls": [
+		{"action": "accept"}, // load bearing, do not delete
+		// scurgery:ns-two
+		{"action": "accept", "src": ["tag:two"]},
+	],
+}
+`
+	res, err := Remove([]byte(before), "ns-one")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if string(res.Policy) != want {
+		t.Errorf("rescued comment landed in the wrong place\n--- want ---\n%s\n--- got ---\n%s", want, res.Policy)
 	}
 }

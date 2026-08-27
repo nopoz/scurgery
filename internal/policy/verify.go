@@ -3,6 +3,7 @@ package policy
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/tailscale/hujson"
 )
@@ -100,7 +101,83 @@ func VerifyRemove(before, after []byte, ns string) error {
 			return fmt.Errorf("self-check failed: top-level key %q: %v. Nothing was written", name, err)
 		}
 	}
+	return verifyCommentsOnRemovedMembersSurvive(bo, after, ns)
+}
+
+// verifyCommentsOnRemovedMembersSurvive checks the half the comparisons above
+// cannot see. A member's leading extra runs from the previous member's comma,
+// so it can hold an operator's comment as well as scurgery's marker, and a
+// removal that takes the whole extra deletes both. The members it belonged to
+// are gone by definition, so no member-by-member comparison reaches it.
+//
+// It reads the comments out of before and asks only whether the text is still
+// somewhere in after. That is deliberately not a claim about placement: it
+// never consults Remove, so Remove agreeing with itself cannot satisfy it.
+func verifyCommentsOnRemovedMembersSurvive(bo *hujson.Object, after []byte, ns string) error {
+	check := func(where string, extra hujson.Extra) error {
+		if !hasMarker(extra, ns) {
+			return nil // this member survives, and so does its extra
+		}
+		for _, c := range commentsIn(extra) {
+			if containsMarker(hujson.Extra(c), ns, "") {
+				continue // scurgery's own marker, which removal is meant to take
+			}
+			if !bytes.Contains(after, []byte(c)) {
+				return fmt.Errorf("self-check failed: removal deleted the comment %q, which sat next to %s but was not scurgery's to remove. Nothing was written", c, where)
+			}
+		}
+		return nil
+	}
+
+	for _, m := range bo.Members {
+		name := memberName(m)
+		if err := check(fmt.Sprintf("top-level key %q", name), m.Name.BeforeExtra); err != nil {
+			return err
+		}
+		switch t := m.Value.Value.(type) {
+		case *hujson.Object:
+			for _, im := range t.Members {
+				if err := check(fmt.Sprintf("%s.%q", name, memberName(im)), im.Name.BeforeExtra); err != nil {
+					return err
+				}
+			}
+		case *hujson.Array:
+			for _, el := range t.Elements {
+				if err := check(fmt.Sprintf("an element of %q", name), el.BeforeExtra); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// commentsIn returns the comment tokens in an extra, in order. An Extra holds
+// nothing but whitespace and comments, so this needs no JSON lexer.
+func commentsIn(extra hujson.Extra) []string {
+	var out []string
+	s := string(extra)
+	for i := 0; i < len(s); {
+		switch {
+		case strings.HasPrefix(s[i:], "//"):
+			j := strings.IndexByte(s[i:], '\n')
+			if j < 0 {
+				return append(out, s[i:])
+			}
+			out = append(out, strings.TrimRight(s[i:i+j], "\r"))
+			i += j + 1
+		case strings.HasPrefix(s[i:], "/*"):
+			j := strings.Index(s[i+2:], "*/")
+			if j < 0 {
+				return append(out, s[i:])
+			}
+			out = append(out, s[i:i+2+j+2])
+			i += 2 + j + 2
+		default:
+			i++
+		}
+	}
+	return out
 }
 
 // verifyContentSurvives checks that everything in before not marked for ns

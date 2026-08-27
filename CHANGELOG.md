@@ -10,6 +10,18 @@ meaning of an exit code is a breaking change and is called out as one here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `remove` no longer deletes a comment the operator wrote next to their own
+  rule. The comments and whitespace attached to a member begin at the previous
+  member's comma, so a comment added after an apply sits in front of scurgery's
+  marker rather than after it, and removing the member took it too. Removal now
+  takes the marker's own line and leaves everything before it where it was.
+- The self-check on `remove` refuses a removal that loses such a comment. It
+  could not see one before, because the comment belongs to a member that the
+  removal is supposed to delete, so no comparison of the surviving members
+  reaches it.
+
 ## [0.1.0] - 2026-08-22
 
 First tagged release.

@@ -332,3 +332,27 @@ func TestVerifyRemoveStructuralRejectsDeletingAnEditedArrayElement(t *testing.T)
 		t.Error("VerifyRemoveStructural must reject deleting an operator-edited array element the bundle no longer matches")
 	}
 }
+
+// The comment lost here is attached to the member that removal legitimately
+// deletes, so nothing about the retained members changes and no content
+// comparison can see it. before and after are both literals: building after
+// from Remove would only ask whether Remove agrees with itself.
+func TestVerifyRemoveRejectsAnOperatorCommentEatenWithARemovedMember(t *testing.T) {
+	before := `{
+	"tagOwners": {
+		"tag:mine": ["group:eng"], // load bearing, do not delete
+		// scurgery:aws-router
+		"tag:aws-app": ["autogroup:admin"],
+	},
+}
+`
+	after := `{
+	"tagOwners": {
+		"tag:mine": ["group:eng"],
+	},
+}
+`
+	if err := VerifyRemove([]byte(before), []byte(after), "aws-router"); err == nil {
+		t.Error("VerifyRemove must reject a result that deleted an operator's comment along with the member it was attached to")
+	}
+}
