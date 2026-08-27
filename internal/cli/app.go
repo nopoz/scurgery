@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -92,6 +93,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 
 	fs := flag.NewFlagSet("scurgery "+cmd, flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	// scurgery prints its own help, so that a help request goes to stdout and
+	// succeeds while a bad flag goes to stderr and does not. flag draws no
+	// such distinction on its own: it prints the same bare defaults list for
+	// both, which is how asking a subcommand for help came to look like the
+	// usage error it is not.
+	fs.Usage = func() {}
 	var (
 		name            = fs.String("name", "", "bundle namespace (defaults to the filename stem)")
 		dryRun          = fs.Bool("dry-run", false, "show the change, write nothing")
@@ -105,6 +112,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 	)
 	flagArgs, positional := splitArgs(rest)
 	if err := fs.Parse(flagArgs); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			commandUsage(stdout, fs)
+			return exitOK
+		}
+		// flag has already named the offending argument on stderr.
+		commandUsage(stderr, fs)
 		return exitUsage
 	}
 	if len(positional) > 1 {
@@ -186,6 +199,21 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.
 		return exitChanged
 	}
 	return exitOK
+}
+
+// commandUsage prints the usage text together with the flag descriptions.
+// Both are needed: the usage text does not spell out every flag, and the flag
+// list on its own says nothing about what the commands are.
+//
+// The heading claims nothing about which command takes which flag. One flag
+// set is registered for every subcommand, so this list is all of them; the
+// command lines in the usage text are what pairs them up, and --json is
+// refused on apply and remove rather than silently ignored.
+func commandUsage(w io.Writer, fs *flag.FlagSet) {
+	fmt.Fprint(w, usage)
+	fmt.Fprint(w, "\nFlags:\n")
+	fs.SetOutput(w)
+	fs.PrintDefaults()
 }
 
 // diffReport and statusReport are the machine-readable contract, so their

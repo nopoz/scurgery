@@ -288,3 +288,74 @@ func TestApplyThenRemoveRestoresGeneratedPolicies(t *testing.T) {
 		}
 	}
 }
+
+// TestRemoveKeepsAnOperatorCommentInjectedAboveTheMarker is the property
+// behind the promise that removal touches nothing scurgery did not add. A
+// member's leading extra starts at the previous member's comma, so a comment
+// the operator writes on their own rule after an apply lands in front of
+// scurgery's marker, in the extra removal deletes. This applies an operator
+// comment at that exact position for every generated shape and asserts the
+// three things that have to hold: the comment survives, the result still
+// parses, and the self-check accepts it.
+//
+// Reverting the salvage in Remove fails this at the first generated policy.
+func TestRemoveKeepsAnOperatorCommentInjectedAboveTheMarker(t *testing.T) {
+	const note = "// operator note, not scurgery's to delete"
+	r := rand.New(rand.NewSource(propertySeed))
+	injected := 0
+
+	for trial := 0; trial < propertyTrials; trial++ {
+		policyText, shapes := genPolicy(r, trial)
+		bundleText := genBundle(r, trial, shapes)
+		ns := fmt.Sprintf("prop-%d", trial)
+
+		applied, err := Apply([]byte(policyText), []byte(bundleText), ns, ApplyOptions{})
+		if err != nil {
+			t.Fatalf("trial %d: Apply: %v", trial, err)
+		}
+		if len(applied.Conflicts) > 0 {
+			t.Fatalf("trial %d: unexpected conflicts, generator should never produce these: %+v", trial, applied.Conflicts)
+		}
+
+		text := string(applied.Policy)
+		for _, form := range []string{markerFor(ns) + "\n", markerKeyFor(ns) + "\n"} {
+			at := strings.Index(text, form)
+			if at < 0 {
+				continue
+			}
+			// Put the note at the end of the line before the marker, which is
+			// the operator's own rule and its comma.
+			lineStart := strings.LastIndexByte(text[:at], '\n')
+			if lineStart < 0 {
+				continue
+			}
+			edited := text[:lineStart] + " " + note + text[lineStart:]
+			if _, err := hujson.Parse([]byte(edited)); err != nil {
+				// A single-line container puts the marker on a line with other
+				// content, where there is no such position to write in.
+				continue
+			}
+			injected++
+
+			res, err := Remove([]byte(edited), ns)
+			if err != nil {
+				t.Fatalf("trial %d: Remove: %v\n%s", trial, err, edited)
+			}
+			if !strings.Contains(string(res.Policy), note) {
+				t.Fatalf("trial %d: removal deleted the operator's comment\n--- before ---\n%s\n--- after ---\n%s", trial, edited, res.Policy)
+			}
+			if _, err := hujson.Parse(res.Policy); err != nil {
+				t.Fatalf("trial %d: result does not parse: %v\n--- before ---\n%s\n--- after ---\n%s", trial, err, edited, res.Policy)
+			}
+			if err := VerifyRemove([]byte(edited), res.Policy, ns); err != nil {
+				t.Fatalf("trial %d: self-check rejected a good removal: %v\n--- before ---\n%s\n--- after ---\n%s", trial, err, edited, res.Policy)
+			}
+		}
+	}
+
+	// A generator change that stopped producing multi-line containers would
+	// leave this test asserting nothing at all.
+	if injected < propertyTrials {
+		t.Errorf("only %d of %d trials had a position to write an operator comment in; this property is not being exercised", injected, propertyTrials)
+	}
+}

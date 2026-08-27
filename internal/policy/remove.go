@@ -164,39 +164,70 @@ func Remove(policy []byte, ns string) (*RemoveResult, error) {
 	rootHad := trailingComma(root)
 	kept := make([]hujson.ObjectMember, 0, len(rootObj.Members))
 
+	// Text rescued from a removed member's leading extra, carried forward onto
+	// the next member that survives, or onto the container when none does.
+	// That is where it sat before: after the previous member's comma.
+	var salvaged hujson.Extra
+
 	for _, m := range rootObj.Members {
 		if hasKeyMarker(m.Name.BeforeExtra, ns) && !containerSharedWithOtherNamespace(m.Value, ns) {
+			salvaged = appendSalvage(salvaged, salvageBeforeExtra(m.Name.BeforeExtra, ns))
 			res.Removed++
 			continue
+		}
+		if len(salvaged) > 0 {
+			m.Name.BeforeExtra = prependExtra(salvaged, m.Name.BeforeExtra)
+			salvaged = nil
 		}
 		had := trailingComma(m.Value)
 		switch tv := m.Value.Value.(type) {
 		case *hujson.Object:
 			km := make([]hujson.ObjectMember, 0, len(tv.Members))
+			var inner hujson.Extra
 			for _, im := range tv.Members {
 				if hasMarker(im.Name.BeforeExtra, ns) {
+					inner = appendSalvage(inner, salvageBeforeExtra(im.Name.BeforeExtra, ns))
 					res.Removed++
 					continue
+				}
+				if len(inner) > 0 {
+					im.Name.BeforeExtra = prependExtra(inner, im.Name.BeforeExtra)
+					inner = nil
 				}
 				km = append(km, im)
 			}
 			tv.Members = km
+			if len(inner) > 0 {
+				tv.AfterExtra = prependExtra(inner, tv.AfterExtra)
+			}
 		case *hujson.Array:
 			ke := make([]hujson.Value, 0, len(tv.Elements))
+			var inner hujson.Extra
 			for _, el := range tv.Elements {
 				if hasMarker(el.BeforeExtra, ns) {
+					inner = appendSalvage(inner, salvageBeforeExtra(el.BeforeExtra, ns))
 					res.Removed++
 					continue
+				}
+				if len(inner) > 0 {
+					el.BeforeExtra = prependExtra(inner, el.BeforeExtra)
+					inner = nil
 				}
 				ke = append(ke, el)
 			}
 			tv.Elements = ke
+			if len(inner) > 0 {
+				tv.AfterExtra = prependExtra(inner, tv.AfterExtra)
+			}
 		}
 		setTrailingComma(m.Value, had)
 		kept = append(kept, m)
 	}
 
 	rootObj.Members = kept
+	if len(salvaged) > 0 {
+		rootObj.AfterExtra = prependExtra(salvaged, rootObj.AfterExtra)
+	}
 	setTrailingComma(root, rootHad)
 	res.Policy = root.Pack()
 	return res, nil

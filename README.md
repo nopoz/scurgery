@@ -187,9 +187,11 @@ Every write runs the same ladder, in order:
 2. Refuse to proceed if the tailnet returned no ETag, since a write could
    not be conditioned safely
 3. Compute the new policy
-4. Self-check: strip scurgery's own markers back out of the result and
-   confirm what's left is identical to the input, i.e. that scurgery only
-   touched what it owns
+4. Self-check that the change did only what it claims. An apply strips the
+   namespace's markers back out of the result and confirms what's left is
+   identical to the input. A removal confirms that the namespace and only
+   the namespace is gone, and that every other namespace, and every key,
+   value and comment the operator owns, survives untouched
 5. Ask the tailnet to validate the result, requiring an empty response body
    rather than trusting a `200`
 6. Render a diff for the operator to read

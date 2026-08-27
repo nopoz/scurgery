@@ -478,3 +478,44 @@ func TestRunDiffJSONKeepsConflictDetailOnStderr(t *testing.T) {
 		t.Errorf("stdout must stay clean when there is no document to emit, got %q", out.String())
 	}
 }
+
+// Asking a subcommand for help is not a usage error. It goes to stdout and
+// succeeds, the same as `scurgery help`, so that a script or a pager can read
+// it and a shell does not see a failure.
+func TestSubcommandHelpSucceedsOnStdout(t *testing.T) {
+	for _, args := range [][]string{
+		{"apply", "-h"},
+		{"apply", "--help"},
+		{"remove", "--help"},
+		{"diff", "-h"},
+		{"status", "--help"},
+	} {
+		var out, errb bytes.Buffer
+		code := Run(context.Background(), args, &out, &errb, strings.NewReader(""))
+		if code != 0 {
+			t.Errorf("Run(%v) = %d, want 0; stderr=%q", args, code, errb.String())
+		}
+		if !strings.Contains(out.String(), "scurgery apply") {
+			t.Errorf("Run(%v) should print the usage text on stdout, got stdout=%q stderr=%q", args, out.String(), errb.String())
+		}
+		if !strings.Contains(out.String(), "-backup-dir") {
+			t.Errorf("Run(%v) should still name the flags the usage text does not spell out, got %q", args, out.String())
+		}
+		if errb.String() != "" {
+			t.Errorf("Run(%v) put help on stderr as well as stdout, which is what made it look like an error: %q", args, errb.String())
+		}
+	}
+}
+
+// The other half: a flag that does not exist is a usage error and must stay
+// one, so that turning help into a success does not turn typos into successes.
+func TestSubcommandUnknownFlagIsStillAUsageError(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := Run(context.Background(), []string{"apply", "bundle.hujson", "--dryrun"}, &out, &errb, strings.NewReader(""))
+	if code != 2 {
+		t.Errorf("Run with an unknown flag = %d, want 2; stderr=%q", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "dryrun") {
+		t.Errorf("the refusal should name the flag it did not recognise, got %q", errb.String())
+	}
+}
