@@ -32,6 +32,12 @@ meaning of an exit code is a breaking change and is called out as one here.
   when it was already empty before the removal. The warning ends by inviting
   the operator to delete the container by hand, so raising it for one scurgery
   never touched points them at their own content.
+- Asking a subcommand for help is no longer reported as a usage error.
+  `scurgery apply --help` printed a bare flag list to stderr and exited 2,
+  which is the code for a command line that was wrong. It now prints the usage
+  text and the flags that subcommand accepts to stdout and exits 0, the same as
+  `scurgery help`. A flag that does not exist is still a usage error, and now
+  carries the usage text with it rather than the flag list alone.
 
 ## [0.1.0] - 2026-08-22
 
